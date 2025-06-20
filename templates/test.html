@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Hello World</title>
+    <style>
+        .square-crop {
+            width: 320px;
+            height: 320px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #webcam {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+    <h1>Hello, World!</h1>
+    <p>This is a simple Flask example.</p>
+    <h2>Webcam Feed (Square Crop)</h2>
+    <div class="square-crop">
+        <img id="webcam" src="{{ url_for('video_feed') }}" alt="Webcam Feed">
+    </div>
+</body>
+</html>

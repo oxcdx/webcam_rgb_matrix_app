@@ -1,0 +1,42 @@
+/* Bootstrap overrides and theming go here */
+:root {
+    /* Example: Change Bootstrap primary color */
+    --bs-primary: #0033cc;
+    --bs-primary-rgb: 0, 51, 204;
+    --bs-border-radius: 0.5rem;
+}
+
+[data-bs-theme="dark"] {
+    --bs-primary-rgb: 0, 51, 204;
+    --bs-body-bg: #000;
+}
+
+/* Custom styles from index.html */
+.square-crop {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    /* fallback for browsers without aspect-ratio support: */
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #222;
+    min-width: 150px;
+    min-height: 150px;
+    max-height: calc(100vh - 140px);
+    max-width: calc(100vh - 140px);
+    box-shadow:
+        0 0 4px 4px rgba(255,255,255,0.2);
+}
+.square-crop img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#webcam {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}

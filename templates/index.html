@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tracing Together</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}">
+</head>
+<body data-bs-theme="dark">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+        <div class="container-fluid">
+            <h1 class="navbar-brand">Tracing Together</h1>
+            <div class="text-end">
+                <div class="btn-group">
+                    <button id="show-modal-btn" class="btn btn-secondary">Show Editor</button>
+                    <button id="capture-btn" class="btn btn-danger">Capture Image</button>
+                </div>
+            </div> 
+        </div>
+    </nav>
+    <main class="container-fluid">
+        <div class="row">
+            <div class="col-md-6 d-flex justify-content-center">
+                <div class="square-crop mb-3">
+                    <img id="webcam" src="{{ url_for('video_feed') }}" alt="Webcam Feed" class="img-fluid h-100 w-100">
+                </div>
+                <p class="text-center visually-hidden">Original Feed</p>
+            </div>
+            <div class="col-md-6 d-flex justify-content-center">
+                <div class="square-crop mb-3">
+                    <img id="webcam-mosaic" src="{{ url_for('video_feed_mosaic') }}" alt="Mosaic Feed" class="img-fluid h-100 w-100">
+                </div>
+                <p class="text-center visually-hidden">Mosaic Feed (32x32 tiles)</p>
+            </div>          
+        </div> 
+    </main>
+    <!-- Modal for third video feed -->
+    <div class="modal fade" id="effectModal" tabindex="-1" aria-labelledby="effectModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="effectModalLabel">Mosaic + Effects</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row">
+              <div class="col-12 col-lg-6 d-flex align-items-center justify-content-center">
+                <div class="square-crop mb-3 w-100">
+                  <img id="captured-mosaic" src="{{ url_for('static', filename='img/placeholder.jpg') }}" alt="Captured Mosaic" class="img-fluid rounded border">
+                </div>
+              </div>
+              <div class="col-12 col-lg-6">
+                <div class="mb-2">
+                    <label for="brightness" class="form-label">Brightness</label>
+                    <input type="range" class="form-range" min="0.5" max="2.0" step="0.01" id="brightness" value="1.0">
+                </div>
+                <div class="mb-2">
+                    <label for="contrast" class="form-label">Contrast</label>
+                    <input type="range" class="form-range" min="0.5" max="2.0" step="0.01" id="contrast" value="1.0">
+                </div>
+                <div class="mb-2">
+                    <label for="saturation" class="form-label">Saturation</label>
+                    <input type="range" class="form-range" min="0.0" max="2.0" step="0.01" id="saturation" value="1.0">
+                </div>
+                <div class="mb-2">
+                    <label for="hue-shift" class="form-label">Hue Shift</label>
+                    <input type="range" class="form-range" min="0" max="179" step="1" id="hue-shift" value="0">
+                </div>
+                <div class="mb-2">
+                    <button id="colorize-btn" class="btn btn-warning w-100 mb-2">Colorize: Off</button>
+                </div>
+                <div class="mb-2">
+                    <button id="save-final-btn" class="btn btn-primary w-100">Save Final Image</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+
+        let lastCapture = null;
+        let colorize = false;
+
+        const effectModal = new bootstrap.Modal(document.getElementById('effectModal'));
+
+        document.getElementById("show-modal-btn").onclick = function() {
+            if (!lastCapture) {
+                alert("No image has been captured yet.");
+                return;
+            }
+            fetch("/matrix_edit"); // <--- Add this line
+            updateProcessedMosaic();
+            effectModal.show();
+        };
+
+        document.getElementById("capture-btn").onclick = function() {
+            let base = prompt("Enter a name for this capture:");
+            if (!base) return;
+            fetch("/capture_image", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({base})
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    lastCapture = {
+                        folder: data.folder,
+                        filename: data.folder + "-mosaic.jpg"
+                    };
+                    document.getElementById("hue-shift").value = 0; // Reset on new capture
+                    colorize = false;
+                    updateColorizeButton();
+                    updateProcessedMosaic();
+                    fetch("/matrix_edit");
+                    effectModal.show();
+                } else {
+                    alert("Error: " + data.error);
+                }
+            });
+        };
+
+        function getSliderValues() {
+            return {
+                brightness: document.getElementById("brightness").value,
+                contrast: document.getElementById("contrast").value,
+                saturation: document.getElementById("saturation").value,
+                hue_shift: document.getElementById("hue-shift").value,
+                colorize: colorize ? 1 : 0
+            };
+        }
+
+        function updateProcessedMosaic() {
+            if (!lastCapture) return;
+            const params = getSliderValues();
+            const query = new URLSearchParams(params).toString();
+            const url = `/processed_mosaic/${lastCapture.folder}/${lastCapture.filename}?${query}&t=${Date.now()}`;
+            document.getElementById("captured-mosaic").src = url;
+        }
+
+        ["brightness", "contrast", "saturation", "hue-shift"].forEach(id => {
+            document.getElementById(id).addEventListener("input", updateProcessedMosaic);
+        });
+
+        function updateColorizeButton() {
+            const btn = document.getElementById("colorize-btn");
+            btn.textContent = "Colorize: " + (colorize ? "On" : "Off");
+            btn.classList.toggle("btn-warning", !colorize);
+            btn.classList.toggle("btn-success", colorize);
+        }
+
+        document.getElementById("colorize-btn").onclick = function() {
+            colorize = !colorize;
+            updateColorizeButton();
+            updateProcessedMosaic();
+        };
+
+        function sendMatrixEffectParams() {
+            fetch("/set_matrix_effect_params", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    brightness: document.getElementById("brightness").value,
+                    contrast: document.getElementById("contrast").value,
+                    saturation: document.getElementById("saturation").value,
+                    hue_shift: document.getElementById("hue-shift").value,
+                    colorize: colorize ? 1 : 0
+                })
+            });
+        }
+
+        ["brightness", "contrast", "saturation", "hue-shift"].forEach(id => {
+            document.getElementById(id).addEventListener("input", function() {
+                updateProcessedMosaic();
+                sendMatrixEffectParams();
+            });
+        });
+
+        document.getElementById("colorize-btn").onclick = function() {
+            colorize = !colorize;
+            updateColorizeButton();
+            updateProcessedMosaic();
+            sendMatrixEffectParams();
+        };
+
+        document.getElementById("save-final-btn").onclick = function() {
+            if (!lastCapture) return;
+            const params = getSliderValues();
+            fetch("/save_final_image", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    folder: lastCapture.folder,
+                    filename: lastCapture.filename,
+                    params: params
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    // Optionally alert or update UI
+                } else {
+                    alert("Error: " + data.error);
+                }
+                effectModal.hide(); // Close the modal
+            });
+        };
+    });
+    </script>
+    <script>
+    document.getElementById('effectModal').addEventListener('hidden.bs.modal', function () {
+        fetch("/matrix_live");
+    });
+    </script>
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle.min.js') }}"></script>
+</body>
+</html>
