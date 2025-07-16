@@ -12,6 +12,7 @@
             <h1 class="navbar-brand">Tracing Together</h1>
             <div class="text-end">
                 <div class="btn-group">
+                    <button id="scanner-mode-btn" class="btn btn-info">Scanner Mode: Off</button>
                     <button id="show-modal-btn" class="btn btn-secondary">Show Editor</button>
                     <button id="capture-btn" class="btn btn-danger">Capture Image</button>
                 </div>
@@ -19,6 +20,22 @@
         </div>
     </nav>
     <main class="container-fluid">
+        <!-- Scanner Mode Controls -->
+        <div id="scanner-controls" class="row mb-4" style="display: none;">
+            <div class="col-12 text-center">
+                <div class="card bg-secondary">
+                    <div class="card-body">
+                        <h5 class="card-title">Scanner Mode</h5>
+                        <p class="card-text">Use your Windows scanner to capture images</p>
+                        <div class="d-flex justify-content-center gap-3">
+                            <button id="upload-btn" class="btn btn-primary btn-lg">📁 Upload Scanned Image</button>
+                            <input type="file" id="file-input" accept="image/*" style="display: none;">    
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <div class="row">
             <div class="col-md-6 d-flex justify-content-center">
                 <div class="square-crop mb-3">
@@ -63,6 +80,9 @@
                     <input type="range" class="form-range" min="0.0" max="2.0" step="0.01" id="saturation" value="1.0">
                 </div>
                 <div class="mb-2">
+                    <button id="invert-btn" class="btn btn-outline-light w-100 mb-2">Invert: Off</button>
+                </div>
+                <div class="mb-2">
                     <label for="hue-shift" class="form-label">Hue Shift</label>
                     <input type="range" class="form-range" min="0" max="179" step="1" id="hue-shift" value="0">
                 </div>
@@ -80,9 +100,122 @@
     </div>
     <script>
     document.addEventListener("DOMContentLoaded", function() {
-
+        let scannerMode = false;
+        let scannerFilename = null;
         let lastCapture = null;
         let colorize = false;
+        let invert = false;
+
+        // Initialize scanner mode state
+        fetch("/get_scanner_mode")
+            .then(res => res.json())
+            .then(data => {
+                scannerMode = data.scanner_mode;
+                scannerFilename = data.scanner_filename;
+                updateScannerModeUI();
+            });
+
+        // Initialize button states
+        function initializeButtons() {
+            updateColorizeButton();
+            updateInvertButton();
+        }
+
+        // Call initialization when DOM is ready
+        setTimeout(initializeButtons, 100);
+
+        function updateScannerModeUI() {
+            const btn = document.getElementById('scanner-mode-btn');
+            const controls = document.getElementById('scanner-controls');
+            
+            btn.textContent = "Scanner Mode: " + (scannerMode ? "On" : "Off");
+            btn.classList.toggle("btn-info", !scannerMode);
+            btn.classList.toggle("btn-success", scannerMode);
+            
+            if (scannerMode) {
+                controls.style.display = 'block';
+            } else {
+                controls.style.display = 'none';
+            }
+        }
+
+        // Scanner mode toggle
+        document.getElementById('scanner-mode-btn').onclick = function() {
+            scannerMode = !scannerMode;
+            fetch("/set_scanner_mode", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled: scannerMode})
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    updateScannerModeUI();
+                    // Update scanner filename when mode changes
+                    fetch("/get_scanner_mode")
+                        .then(res => res.json())
+                        .then(data => {
+                            scannerFilename = data.scanner_filename;
+                        });
+                }
+            });
+        };
+
+        // Scanner functionality - simple upload only
+        document.getElementById('upload-btn').onclick = function() {
+            document.getElementById('file-input').click();
+        };
+
+        document.getElementById('file-input').onchange = function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                // Prompt for filename like webcam captures
+                let filename = prompt("Enter a name for this scanner upload:");
+                if (!filename) {
+                    // Reset the file input if user cancels
+                    event.target.value = '';
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('image', file);
+                formData.append('filename', filename);
+                uploadScannerImage(formData);
+            }
+        };
+        
+        function uploadScannerImage(formData) {
+            fetch("/upload_scanner_image", {
+                method: "POST",
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    alert("Scanner image uploaded and auto-cropped successfully!");
+                    
+                    // Store the scanner filename for future captures
+                    scannerFilename = data.filename;
+                    
+                    // Set lastCapture so the editor can work with the scanner image
+                    if (data.folder) {
+                        lastCapture = {
+                            folder: data.folder,
+                            filename: data.folder + "-mosaic.jpg"
+                        };
+                    }
+                    
+                    // Refresh the video feeds to show the new image
+                    document.getElementById('webcam').src = "{{ url_for('video_feed') }}?" + new Date().getTime();
+                    document.getElementById('webcam-mosaic').src = "{{ url_for('video_feed_mosaic') }}?" + new Date().getTime();
+                } else {
+                    alert("Error: " + data.error);
+                }
+            })
+            .catch(err => {
+                alert("Upload failed: " + err);
+            });
+        }
 
         const effectModal = new bootstrap.Modal(document.getElementById('effectModal'));
 
@@ -97,8 +230,17 @@
         };
 
         document.getElementById("capture-btn").onclick = function() {
-            let base = prompt("Enter a name for this capture:");
-            if (!base) return;
+            let base;
+            
+            // In scanner mode with a filename, use that filename without prompting
+            if (scannerMode && scannerFilename) {
+                base = scannerFilename;
+            } else {
+                // Otherwise, prompt for a name
+                base = prompt("Enter a name for this capture:");
+                if (!base) return;
+            }
+            
             fetch("/capture_image", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -113,7 +255,9 @@
                     };
                     document.getElementById("hue-shift").value = 0; // Reset on new capture
                     colorize = false;
+                    invert = false;
                     updateColorizeButton();
+                    updateInvertButton();
                     updateProcessedMosaic();
                     fetch("/matrix_edit");
                     effectModal.show();
@@ -129,7 +273,8 @@
                 contrast: document.getElementById("contrast").value,
                 saturation: document.getElementById("saturation").value,
                 hue_shift: document.getElementById("hue-shift").value,
-                colorize: colorize ? 1 : 0
+                colorize: colorize ? 1 : 0,
+                invert: invert ? 1 : 0
             };
         }
 
@@ -152,6 +297,13 @@
             btn.classList.toggle("btn-success", colorize);
         }
 
+        function updateInvertButton() {
+            const btn = document.getElementById("invert-btn");
+            btn.textContent = "Invert: " + (invert ? "On" : "Off");
+            btn.classList.toggle("btn-outline-light", !invert);
+            btn.classList.toggle("btn-light", invert);
+        }
+
         document.getElementById("colorize-btn").onclick = function() {
             colorize = !colorize;
             updateColorizeButton();
@@ -167,7 +319,8 @@
                     contrast: document.getElementById("contrast").value,
                     saturation: document.getElementById("saturation").value,
                     hue_shift: document.getElementById("hue-shift").value,
-                    colorize: colorize ? 1 : 0
+                    colorize: colorize ? 1 : 0,
+                    invert: invert ? 1 : 0
                 })
             });
         }
@@ -186,6 +339,13 @@
             sendMatrixEffectParams();
         };
 
+        document.getElementById("invert-btn").onclick = function() {
+            invert = !invert;
+            updateInvertButton();
+            updateProcessedMosaic();
+            sendMatrixEffectParams();
+        };
+
         document.getElementById("save-final-btn").onclick = function() {
             if (!lastCapture) return;
             const params = getSliderValues();
@@ -200,12 +360,17 @@
             })
             .then(res => res.json())
             .then(data => {
+                console.log(data); // <-- Add this line for debugging
                 if (data.success) {
-                    // Optionally alert or update UI
+                    alert("Image saved and uploaded successfully!");
                 } else {
                     alert("Error: " + data.error);
                 }
-                effectModal.hide(); // Close the modal
+                effectModal.hide(); // Always close the modal
+            })
+            .catch(err => {
+                alert("Network or server error: " + err);
+                effectModal.hide();
             });
         };
     });

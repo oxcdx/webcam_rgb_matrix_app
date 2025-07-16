@@ -15,10 +15,6 @@ from rgbmatrix import RGBMatrix, RGBMatrixOptions
 from PIL import Image
 import time
 from datetime import datetime
-import base64
-import io
-
-isSavingToFTP = False
 
 UPLOAD_ROOT = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
@@ -55,12 +51,6 @@ last_captured_mosaic_path = None
 display_captured = False
 display_lock = threading.Lock()
 
-# Scanner mode configuration
-USE_SCANNER_MODE = False  # Set to True to use scanner instead of webcam
-scanner_image = None
-scanner_filename = None  # Store the current scanner image filename
-scanner_lock = threading.Lock()
-
 def gen_frames():
     global latest_frame
     while True:
@@ -77,9 +67,6 @@ def gen_frames():
 def matrix_loop():
     global latest_frame
     global mosaic_frame
-    global USE_SCANNER_MODE
-    
-    # Setup webcam pipeline
     pipeline = (
         "v4l2src device=/dev/video0 ! "
         "video/x-raw,width=320,height=180 ! "
@@ -88,37 +75,24 @@ def matrix_loop():
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
     options = RGBMatrixOptions()
-    options.rows = 32
+    options.rows = 16
     options.cols = 32
-    options.chain_length = 4
+    options.chain_length = 2
     options.hardware_mapping = 'adafruit-hat'
-    # options.pixel_mapper_config = "U-mapper"
-    # options.pwm_bits = 6
-    # options.pwm_lsb_nanoseconds = 800
-    # options.brightness = 50
+    options.pixel_mapper_config = "U-mapper"
+    options.pwm_bits = 6
+    options.pwm_lsb_nanoseconds = 800
+    options.brightness = 50
     matrix = RGBMatrix(options=options)
     
-    # Only check camera in webcam mode
-    if not USE_SCANNER_MODE and not cap.isOpened():
+    if not cap.isOpened():
         print("Cannot open camera")
         return
 
     while True:
-        # In scanner mode, we don't read from webcam
-        if USE_SCANNER_MODE:
-            # In scanner mode, we rely on uploaded images
-            # Check if we have a scanner image to process
-            with scanner_lock:
-                if scanner_image is not None:
-                    frame = scanner_image.copy()
-                else:
-                    time.sleep(0.1)
-                    continue
-        else:
-            # Webcam mode - read from camera
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                continue
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
 
         with frame_lock:
             latest_frame = frame.copy()
@@ -158,15 +132,9 @@ def matrix_loop():
                     saturation = effect_params.get("saturation", 1.0)
                     hue_shift = int(effect_params.get("hue_shift", 0))
                     colorize = int(effect_params.get("colorize", 0))
-                    invert = int(effect_params.get("invert", 0))
                 img = img.astype('float32') / 255.0
                 img = img * contrast + (brightness - 1.0)
                 img = np.clip(img, 0, 1)
-                
-                # Apply invert if enabled
-                if invert:
-                    img = 1.0 - img
-                
                 img_hsv = cv2.cvtColor((img * 255).astype('uint8'), cv2.COLOR_BGR2HSV).astype('float32')
                 img_hsv[..., 1] *= saturation
                 img_hsv[..., 1] = np.clip(img_hsv[..., 1], 0, 255)
@@ -178,13 +146,8 @@ def matrix_loop():
                 img = cv2.cvtColor(img_hsv.astype('uint8'), cv2.COLOR_HSV2BGR).astype('float32') / 255.0
                 img = (img * 255).astype('uint8')
                 img_resized = cv2.resize(img, (32, 32))
-
-                # for four panels: quadruplicate horizontally
-                img_128x32 = np.concatenate([img_resized, img_resized, img_resized, img_resized], axis=1)  # shape (32, 128, 3)
-
-                frame_rgb = cv2.cvtColor(img_128x32, cv2.COLOR_BGR2RGB)
+                frame_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
                 image = Image.fromarray(frame_rgb)
-                matrix.SetImage(image)
                 try:
                     matrix.SetImage(image)
                 except Exception as e:
@@ -195,106 +158,12 @@ def matrix_loop():
             # Display live mosaic as before
             try:
                 resized = cv2.resize(cropped, (32, 32))
-                img_128x32 = np.concatenate([resized, resized, resized, resized], axis=1)
-                frame_rgb = cv2.cvtColor(img_128x32, cv2.COLOR_BGR2RGB)
+                frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
                 image = Image.fromarray(frame_rgb)
                 matrix.SetImage(image)
             except Exception as e:
                 print(f"Matrix live display error: {e}")
                 continue
-
-@app.route("/upload_scanner_image", methods=["POST"])
-def upload_scanner_image():
-    global scanner_image, latest_frame, mosaic_frame, scanner_filename
-    # Accept both 'image' and 'file' for compatibility
-    file = request.files.get('image') or request.files.get('file')
-    user_filename = request.form.get('filename', '').strip()
-    if not file or file.filename == '':
-        return jsonify(success=False, error="No image file selected")
-    if not user_filename:
-        return jsonify(success=False, error="No filename provided")
-
-    # Sanitize filename
-    safe_filename = "".join(c if c.isalnum() or c in "-_" else "_" for c in user_filename)
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    folder = f"{timestamp}-{safe_filename}"
-    save_dir = os.path.join(UPLOAD_ROOT, folder)
-    os.makedirs(save_dir, exist_ok=True)
-
-    try:
-        # Read image data
-        image_data = file.read()
-        nparr = np.frombuffer(image_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            return jsonify(success=False, error="Invalid image format")
-
-        # Auto-crop A4 scanned image to specific region
-        h, w = img.shape[:2]
-        pixels_per_cm = w / 21.0
-        left_offset_px = int(4.3 * pixels_per_cm)
-        top_offset_px = int(1.4 * pixels_per_cm)
-        crop_size_px = int(11.8 * pixels_per_cm)
-        right_edge = min(left_offset_px + crop_size_px, w)
-        bottom_edge = min(top_offset_px + crop_size_px, h)
-        if (right_edge > left_offset_px and bottom_edge > top_offset_px and left_offset_px >= 0 and top_offset_px >= 0):
-            cropped_img = img[top_offset_px:bottom_edge, left_offset_px:right_edge]
-            if cropped_img.shape[0] > 0 and cropped_img.shape[1] > 0:
-                img = cropped_img
-                
-        # Save original (cropped) image
-        original_path = os.path.join(save_dir, f"{safe_filename}.jpg")
-        cv2.imwrite(original_path, img)
-
-        # Save 180x180px version for manipulation
-        min_dim = min(img.shape[:2])
-        start_x = max((img.shape[1] - min_dim) // 2, 0)
-        start_y = max((img.shape[0] - min_dim) // 2, 0)
-        square_img = img[start_y:start_y+min_dim, start_x:start_x+min_dim]
-        img_180 = cv2.resize(square_img, (180, 180), interpolation=cv2.INTER_AREA)
-        small_path = os.path.join(save_dir, f"{safe_filename}_180x180.jpg")
-        cv2.imwrite(small_path, img_180)
-
-        # Update scanner_image and also latest_frame for compatibility
-        with scanner_lock:
-            scanner_image = img_180.copy()
-            scanner_filename = safe_filename  # Store the scanner filename
-        with frame_lock:
-            latest_frame = img_180.copy()
-            # Generate mosaic from 180x180 image
-            min_dim = min(img_180.shape[:2])
-            start_x = max((img_180.shape[1] - min_dim) // 2, 0)
-            start_y = max((img_180.shape[0] - min_dim) // 2, 0)
-            cropped = img_180[start_y:start_y+min_dim, start_x:start_x+min_dim]
-            if cropped.shape[0] > 0 and cropped.shape[1] > 0:
-                small = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_LINEAR)
-                mosaic = cv2.resize(small, (min_dim, min_dim), interpolation=cv2.INTER_NEAREST)
-                mosaic_frame = mosaic.copy()
-
-        # Set the captured mosaic path and flag for editor compatibility
-        mosaic_path = small_path  # Use the 180x180 as the main for manipulation
-        global last_captured_mosaic_path, display_captured
-        with display_lock:
-            last_captured_mosaic_path = mosaic_path
-            display_captured = True
-
-        return jsonify(success=True, message="Scanner image uploaded and processed successfully", folder=folder, filename=safe_filename)
-    except Exception as e:
-        return jsonify(success=False, error=str(e))
-
-@app.route("/set_scanner_mode", methods=["POST"])
-def set_scanner_mode():
-    global USE_SCANNER_MODE
-    data = request.json
-    USE_SCANNER_MODE = data.get("enabled", False)
-    return jsonify(success=True, scanner_mode=USE_SCANNER_MODE)
-
-@app.route("/get_scanner_mode")
-def get_scanner_mode():
-    global scanner_filename
-    with scanner_lock:
-        current_filename = scanner_filename
-    return jsonify(scanner_mode=USE_SCANNER_MODE, scanner_filename=current_filename)
 
 @app.route("/video_feed_mosaic")
 def video_feed_mosaic():
@@ -371,17 +240,11 @@ def set_effect_params():
 
 @app.route("/capture_image", methods=["POST"])
 def capture_image():
-    global latest_frame, mosaic_frame, last_captured_mosaic_path, display_captured, scanner_filename, USE_SCANNER_MODE
+    global latest_frame, mosaic_frame, last_captured_mosaic_path, display_captured
     data = request.json
-    
-    # In scanner mode, use the stored scanner filename instead of prompting
-    if USE_SCANNER_MODE and scanner_filename:
-        base = scanner_filename
-    else:
-        base = data.get("base", "").strip()
-        if not base:
-            return jsonify(success=False, error="Missing base name")
-    
+    base = data.get("base", "").strip()
+    if not base:
+        return jsonify(success=False, error="Missing base name")
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     folder = f"{timestamp}-{base}"
     save_dir = os.path.join(UPLOAD_ROOT, folder)
@@ -412,7 +275,6 @@ def processed_mosaic(folder, filename):
     saturation = float(request.args.get("saturation", 1.0))
     hue_shift = int(request.args.get("hue_shift", 0))
     colorize = int(request.args.get("colorize", 0))
-    invert = int(request.args.get("invert", 0))
 
     img_path = os.path.join(UPLOAD_ROOT, folder, filename)
     if not os.path.exists(img_path):
@@ -425,11 +287,6 @@ def processed_mosaic(folder, filename):
     img = img.astype('float32') / 255.0
     img = img * contrast + (brightness - 1.0)
     img = np.clip(img, 0, 1)
-    
-    # Apply invert if enabled
-    if invert:
-        img = 1.0 - img
-    
     img_hsv = cv2.cvtColor((img * 255).astype('uint8'), cv2.COLOR_BGR2HSV).astype('float32')
     img_hsv[..., 1] *= saturation
     img_hsv[..., 1] = np.clip(img_hsv[..., 1], 0, 255)
@@ -469,7 +326,6 @@ def set_matrix_effect_params():
         effect_params["saturation"] = float(data.get("saturation", 1.0))
         effect_params["hue_shift"] = int(data.get("hue_shift", 0))
         effect_params["colorize"] = int(data.get("colorize", 0))
-        effect_params["invert"] = int(data.get("invert", 0))
     return jsonify(success=True)
 
 @app.route("/save_final_image", methods=["POST"])
@@ -491,7 +347,6 @@ def save_final_image():
     saturation = float(params.get("saturation", 1.0))
     hue_shift = int(params.get("hue_shift", 0))
     colorize = int(params.get("colorize", 0))
-    invert = int(params.get("invert", 0))
 
     img = cv2.imread(img_path)
     if img is None:
@@ -501,11 +356,6 @@ def save_final_image():
     img = img.astype('float32') / 255.0
     img = img * contrast + (brightness - 1.0)
     img = np.clip(img, 0, 1)
-    
-    # Apply invert if enabled
-    if invert:
-        img = 1.0 - img
-    
     img_hsv = cv2.cvtColor((img * 255).astype('uint8'), cv2.COLOR_BGR2HSV).astype('float32')
     img_hsv[..., 1] *= saturation
     img_hsv[..., 1] = np.clip(img_hsv[..., 1], 0, 255)
@@ -524,17 +374,16 @@ def save_final_image():
     cv2.imwrite(final_path, img)
 
     # --- FTP upload ---
-    if isSavingToFTP:
-        try:
-            with ftplib.FTP_TLS(context=context) as ftp:
-                ftp.connect("77.72.2.82", 21)
-                ftp.login("tracingtogetherauto@oc-d.co.uk", "72lrqnvrw387")
-                ftp.prot_p()
-                ftp.cwd("screenshots")
-                with open(final_path, "rb") as f:
-                    ftp.storbinary(f"STOR {final_filename}", f)
-        except Exception as e:
-            return jsonify(success=False, error=f"FTP upload failed: {e}")
+    try:
+        with ftplib.FTP_TLS(context=context) as ftp:
+            ftp.connect("77.72.2.82", 21)
+            ftp.login("tracingtogetherauto@oc-d.co.uk", "72lrqnvrw387")
+            ftp.prot_p()
+            ftp.cwd("screenshots")
+            with open(final_path, "rb") as f:
+                ftp.storbinary(f"STOR {final_filename}", f)
+    except Exception as e:
+        return jsonify(success=False, error=f"FTP upload failed: {e}")
 
     return jsonify(success=True, path=final_path)
 

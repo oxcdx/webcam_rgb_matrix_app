@@ -1,0 +1,5 @@
+opencv-python>=4.5.0
+pillow>=8.0.0
+numpy>=1.19.0
+flask>=2.0.0
+# rpi-rgb-led-matrix (install from source: https://github.com/hzeller/rpi-rgb-led-matrix)
