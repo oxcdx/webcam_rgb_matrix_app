@@ -8,6 +8,8 @@ from rgbmatrix import RGBMatrix, RGBMatrixOptions
 from PIL import Image
 import threading
 import random
+import requests
+import json
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
@@ -17,71 +19,114 @@ sys.path.insert(0, BASE_DIR)
 EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
 os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 
+# Configuration
+EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
+os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
+
+TOGGLE_4_SCREEN_MODE = True  # Set to False for 1-panel mode (now we always use 4 screens)
+TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
+USE_COORDINATOR = True  # Set to True to use coordinator service
+COORDINATOR_IP = "127.0.0.1"  # IP of the coordinator Pi
+COORDINATOR_PORT = 5001
+DISPLAY_ID = 0  # Set to 0 for first Pi, 1 for second Pi, etc.
+
 # Global variables
-current_images = [None, None, None, None]  # One image per screen
-image_index = 0
-image_files = []
+current_images = [None, None, None, None]  # Always 4 screens
+assigned_filenames = [None, None, None, None]  # Current assigned filenames
+last_coordinator_check = 0
 image_lock = threading.Lock()
 
-def load_image_files():
-    """Load all JPG files from the exhibition folder and shuffle order"""
-    global image_files
-    pattern = os.path.join(EXHIBITION_FOLDER, "*.jpg")
-    image_files = glob.glob(pattern)
-    image_files.extend(glob.glob(os.path.join(EXHIBITION_FOLDER, "*.jpeg")))
-    image_files.extend(glob.glob(os.path.join(EXHIBITION_FOLDER, "*.JPG")))
-    image_files.extend(glob.glob(os.path.join(EXHIBITION_FOLDER, "*.JPEG")))
-    image_files.sort()  # Sort for consistent order before shuffling
-    if len(image_files) > 1:
-        random.shuffle(image_files)
-    print(f"Found {len(image_files)} images in exhibition folder (shuffled)")
-    return len(image_files) > 0
-
-def load_and_resize_image(image_path):
-    """Load an image and resize it to 32x32 for the LED matrix"""
+def fetch_coordinator_images():
+    """Fetch current image assignments from coordinator"""
+    global assigned_filenames, last_coordinator_check
+    
     try:
+        url = f"http://{COORDINATOR_IP}:{COORDINATOR_PORT}/images/{DISPLAY_ID}"
+        response = requests.get(url, timeout=2)
+        
+        if response.status_code == 200:
+            data = response.json()
+            with image_lock:
+                assigned_filenames = data['images']
+                last_coordinator_check = time.time()
+            print(f"Received from coordinator: {[f[:20] + '...' if len(f) > 20 else f for f in assigned_filenames]}")
+            return True
+        else:
+            print(f"Coordinator returned status {response.status_code}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to connect to coordinator: {e}")
+        return False
+
+def load_image_files():
+    """Load all JPG files from the exhibition folder (fallback mode only)"""
+    pattern = os.path.join(EXHIBITION_FOLDER, "*.jpg")
+    files = glob.glob(pattern)
+    files.extend(glob.glob(os.path.join(EXHIBITION_FOLDER, "*.jpeg")))
+    files.extend(glob.glob(os.path.join(EXHIBITION_FOLDER, "*.JPG")))
+    files.extend(glob.glob(os.path.join(EXHIBITION_FOLDER, "*.JPEG")))
+    files.sort()
+    if len(files) > 1:
+        random.shuffle(files)
+    print(f"Fallback: Found {len(files)} local images")
+    return files
+
+def load_and_resize_image(filename):
+    """Load an image by filename and resize it to 32x32 for the LED matrix"""
+    try:
+        image_path = os.path.join(EXHIBITION_FOLDER, filename)
         img = cv2.imread(image_path)
         if img is None:
             print(f"Failed to load image: {image_path}")
             return None
         
-        # Crop to square first
-        h, w = img.shape[:2]
-        min_dim = min(h, w)
-        start_x = max((w - min_dim) // 2, 0)
-        start_y = max((h - min_dim) // 2, 0)
-        cropped = img[start_y:start_y+min_dim, start_x:start_x+min_dim]
-        
-        # Resize to 32x32
-        resized = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_AREA)
+        # Resize to 32x32 for each screen
+        resized = cv2.resize(img, (32, 32), interpolation=cv2.INTER_AREA)
         return resized
     except Exception as e:
-        print(f"Error processing image {image_path}: {e}")
+        print(f"Error processing image {filename}: {e}")
         return None
 
 def update_images():
-    """Update the current images for each screen"""
-    global current_images, image_index
+    """Update the current images based on coordinator assignments"""
+    global current_images
     
-    if len(image_files) == 0:
-        return
-    
-    with image_lock:
-        # Load 4 different images for the 4 screens
-        for screen in range(4):
-            if image_index + screen < len(image_files):
-                img_path = image_files[image_index + screen]
-                current_images[screen] = load_and_resize_image(img_path)
-                print(f"Screen {screen + 1}: {os.path.basename(img_path)}")
-            else:
-                # Wrap around if we don't have enough images
-                wrap_index = (image_index + screen) % len(image_files)
-                img_path = image_files[wrap_index]
-                current_images[screen] = load_and_resize_image(img_path)
-                print(f"Screen {screen + 1} (wrapped): {os.path.basename(img_path)}")
+    if USE_COORDINATOR:
+        # Try to get assignments from coordinator
+        if fetch_coordinator_images():
+            with image_lock:
+                for screen in range(4):
+                    if assigned_filenames[screen]:
+                        current_images[screen] = load_and_resize_image(assigned_filenames[screen])
+                    else:
+                        current_images[screen] = None
+        else:
+            print("Coordinator unavailable, using fallback mode")
+            # Fallback to local cycling
+            fallback_files = load_image_files()
+            if fallback_files:
+                with image_lock:
+                    for screen in range(4):
+                        if screen < len(fallback_files):
+                            img_path = fallback_files[screen % len(fallback_files)]
+                            current_images[screen] = cv2.imread(img_path)
+                            if current_images[screen] is not None:
+                                current_images[screen] = cv2.resize(current_images[screen], (32, 32))
+    else:
+        # Local mode (original behavior)
+        fallback_files = load_image_files()
+        if fallback_files:
+            with image_lock:
+                for screen in range(4):
+                    if screen < len(fallback_files):
+                        img_path = fallback_files[screen % len(fallback_files)]
+                        current_images[screen] = cv2.imread(img_path)
+                        if current_images[screen] is not None:
+                            current_images[screen] = cv2.resize(current_images[screen], (32, 32))
 
 def create_matrix_image():
-    """Create a 128x32 image by concatenating 4 screen images"""
+    """Create the image for the matrix display"""
     with image_lock:
         # Create black fallback images if any are missing
         screen_images = []
@@ -94,92 +139,103 @@ def create_matrix_image():
                 screen_images.append(black_img)
         
         # Concatenate horizontally to create 128x32 image
-        matrix_img = np.concatenate(screen_images, axis=1)
-        
-        # Rotate the entire 128x32 image 180 degrees for upside-down displays
+        matrix_img = np.concatenate(screen_images, axis=1) 
         matrix_img = cv2.rotate(matrix_img, cv2.ROTATE_180)
-        
-        # Convert BGR to RGB for PIL
         matrix_img_rgb = cv2.cvtColor(matrix_img, cv2.COLOR_BGR2RGB)
         return Image.fromarray(matrix_img_rgb)
 
 def matrix_loop():
     """Main loop for the RGB matrix display"""
-    global image_index
-    total_images = 0
-    
-    # Setup RGB Matrix
-    options = RGBMatrixOptions()
-    options.rows = 32
-    options.cols = 32
-    options.chain_length = 4
-    options.hardware_mapping = 'adafruit-hat'
-    # options.brightness = 50  # Uncomment to set brightness
-    matrix = RGBMatrix(options=options)
-    
-    print("Starting RGB matrix display...")
-    print("Press Ctrl+C to exit")
-    
-    # Initial load of images
-    if not load_image_files():
-        print("No images found in exhibition folder. Please add some JPG files.")
-        return
-    total_images = len(image_files)
-    update_images()
-    
-    cycle_time = 5.0  # Show each set of images for 5 seconds
-    last_update = time.time()
-    
-    try:
+    if TOGGLE_TEST_PATTERN:
+        options = RGBMatrixOptions()
+        options.rows = 32
+        options.cols = 32
+        options.chain_length = 4
+        options.multiplexing = 6
+        options.hardware_mapping = 'adafruit-hat'
+        options.brightness = 50
+        matrix = RGBMatrix(options=options)
+        print("Starting RGB matrix display in DEDICATED 4-COLOR TEST PATTERN mode...")
+        test_img = np.zeros((32, 128, 3), dtype=np.uint8)  # 4 panels wide
+        # Create test pattern for 4 panels
+        test_img[0:16, 0:32] = [255, 0, 0]     # Panel 1: red
+        test_img[16:32, 0:32] = [0, 255, 0]    # Panel 1: green
+        test_img[0:16, 32:64] = [0, 0, 255]    # Panel 2: blue
+        test_img[16:32, 32:64] = [255, 255, 0] # Panel 2: yellow
+        test_img[0:16, 64:96] = [255, 0, 255]  # Panel 3: magenta
+        test_img[16:32, 64:96] = [0, 255, 255] # Panel 3: cyan
+        test_img[0:16, 96:128] = [255, 255, 255] # Panel 4: white
+        test_img[16:32, 96:128] = [128, 128, 128] # Panel 4: gray
+        matrix.SetImage(Image.fromarray(test_img))
         while True:
-            current_time = time.time()
-            
-            # Check if it's time to cycle to the next set of images
-            if current_time - last_update >= cycle_time:
-                # For this cycle, update one panel at a time, 0.2s apart
-                for panel in range(4):
-                    # Compute which image to show on this panel
-                    next_image_index = (image_index + panel) % total_images
-                    img_path = image_files[next_image_index]
-                    img = load_and_resize_image(img_path)
-                    with image_lock:
-                        # Only update the current panel, keep others as they are
-                        current_images[panel] = img
-                    matrix_image = create_matrix_image()
-                    matrix.SetImage(matrix_image)
-                    time.sleep(0.1)
-                # After all 4 panels updated, advance image_index by 4
-                image_index = (image_index + 4) % total_images
-                last_update = time.time()
-                print(f"Cycled one panel at a time, starting at index {image_index}")
-                # After a full cycle, shuffle if needed
-                if image_index == 0 and total_images > 1:
-                    random.shuffle(image_files)
-                    print("Shuffled image order for new cycle.")
-            else:
-                # Just keep displaying the current image
+            time.sleep(1)
+    else:
+        options = RGBMatrixOptions()
+        options.rows = 32
+        options.cols = 32
+        options.chain_length = 4  # Always 4 panels
+        # options.multiplexing = 6
+        options.hardware_mapping = 'adafruit-hat'
+        options.brightness = 80
+        # anti-flickering stuff
+        # options.pwm_lsb_nanoseconds = 130
+        # options.gpio_slowdown = 4
+        # options.disable_hardware_pulsing = True
+        # options.pwm_bits = 11
+        options.pwm_lsb_nanoseconds = 300
+        options.gpio_slowdown = 2
+        options.pwm_bits = 8
+        matrix = RGBMatrix(options=options)
+        
+        print(f"Starting RGB matrix display (Display ID: {DISPLAY_ID})...")
+        if USE_COORDINATOR:
+            print(f"Using coordinator at {COORDINATOR_IP}:{COORDINATOR_PORT}")
+        else:
+            print("Using local image cycling")
+        print("Press Ctrl+C to exit")
+        
+        # Initial image load
+        update_images()
+        
+        try:
+            while True:
+                # Check for new assignments every few seconds
+                current_time = time.time()
+                if USE_COORDINATOR and current_time - last_coordinator_check > 1.0:
+                    update_images()
+                
+                # Update display
                 try:
                     matrix_image = create_matrix_image()
                     matrix.SetImage(matrix_image)
                 except Exception as e:
                     print(f"Error setting matrix image: {e}")
+                
                 time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("\nExiting...")
-    finally:
-        matrix.Clear()
+                
+        except KeyboardInterrupt:
+            print("\nExiting...")
+        finally:
+            matrix.Clear()
 
 def main():
     """Main function"""
-    print("JPG Cycle App for 4-Panel RGB Matrix")
+    print("JPG Cycle App for 4-Panel RGB Matrix (Client Mode)")
     print(f"Exhibition folder: {EXHIBITION_FOLDER}")
+    print(f"Display ID: {DISPLAY_ID}")
     
-    # Check if exhibition folder exists and has images
+    if USE_COORDINATOR:
+        print(f"Coordinator mode: {COORDINATOR_IP}:{COORDINATOR_PORT}")
+    else:
+        print("Local cycling mode")
+    
+    # Check if exhibition folder exists
     if not os.path.exists(EXHIBITION_FOLDER):
         print(f"Creating exhibition folder: {EXHIBITION_FOLDER}")
         os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
-        print("Please add JPG images to the exhibition folder and restart the app.")
-        return
+        if not USE_COORDINATOR:
+            print("Please add JPG images to the exhibition folder and restart the app.")
+            return
     
     # Start the matrix loop
     matrix_loop()

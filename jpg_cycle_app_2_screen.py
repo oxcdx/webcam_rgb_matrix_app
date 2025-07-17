@@ -19,20 +19,15 @@ sys.path.insert(0, BASE_DIR)
 EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
 os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 
-# Configuration
-EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
-os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
-
-TOGGLE_4_SCREEN_MODE = True  # Set to False for 1-panel mode (now we always use 4 screens)
 TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
 USE_COORDINATOR = True  # Set to True to use coordinator service
-COORDINATOR_IP = "192.168.0.186"  # IP of the coordinator Pi
+COORDINATOR_IP = "192.168.1.100"  # IP of the coordinator Pi
 COORDINATOR_PORT = 5001
-DISPLAY_ID = 1  # Set to 0 for first Pi, 1 for second Pi, etc.
+DISPLAY_ID = 2  # Set to 2 for the third Pi (2-screen Pi)
 
 # Global variables
-current_images = [None, None, None, None]  # Always 4 screens
-assigned_filenames = [None, None, None, None]  # Current assigned filenames
+current_images = [None, None]  # Only 2 screens for this Pi
+assigned_filenames = [None, None]  # Current assigned filenames
 last_coordinator_check = 0
 image_lock = threading.Lock()
 
@@ -96,8 +91,8 @@ def update_images():
         # Try to get assignments from coordinator
         if fetch_coordinator_images():
             with image_lock:
-                for screen in range(4):
-                    if assigned_filenames[screen]:
+                for screen in range(2):  # Only 2 screens
+                    if screen < len(assigned_filenames) and assigned_filenames[screen]:
                         current_images[screen] = load_and_resize_image(assigned_filenames[screen])
                     else:
                         current_images[screen] = None
@@ -107,7 +102,7 @@ def update_images():
             fallback_files = load_image_files()
             if fallback_files:
                 with image_lock:
-                    for screen in range(4):
+                    for screen in range(2):  # Only 2 screens
                         if screen < len(fallback_files):
                             img_path = fallback_files[screen % len(fallback_files)]
                             current_images[screen] = cv2.imread(img_path)
@@ -118,7 +113,7 @@ def update_images():
         fallback_files = load_image_files()
         if fallback_files:
             with image_lock:
-                for screen in range(4):
+                for screen in range(2):  # Only 2 screens
                     if screen < len(fallback_files):
                         img_path = fallback_files[screen % len(fallback_files)]
                         current_images[screen] = cv2.imread(img_path)
@@ -130,7 +125,7 @@ def create_matrix_image():
     with image_lock:
         # Create black fallback images if any are missing
         screen_images = []
-        for i in range(4):
+        for i in range(2):  # Only 2 screens
             if current_images[i] is not None:
                 screen_images.append(current_images[i])
             else:
@@ -138,7 +133,7 @@ def create_matrix_image():
                 black_img = np.zeros((32, 32, 3), dtype=np.uint8)
                 screen_images.append(black_img)
         
-        # Concatenate horizontally to create 128x32 image
+        # Concatenate horizontally to create 64x32 image (2 panels wide)
         matrix_img = np.concatenate(screen_images, axis=1) 
         matrix_img = cv2.rotate(matrix_img, cv2.ROTATE_180)
         matrix_img_rgb = cv2.cvtColor(matrix_img, cv2.COLOR_BGR2RGB)
@@ -150,22 +145,18 @@ def matrix_loop():
         options = RGBMatrixOptions()
         options.rows = 32
         options.cols = 32
-        options.chain_length = 4
+        options.chain_length = 2  # Only 2 panels
         options.multiplexing = 6
         options.hardware_mapping = 'adafruit-hat'
         options.brightness = 50
         matrix = RGBMatrix(options=options)
-        print("Starting RGB matrix display in DEDICATED 4-COLOR TEST PATTERN mode...")
-        test_img = np.zeros((32, 128, 3), dtype=np.uint8)  # 4 panels wide
-        # Create test pattern for 4 panels
+        print("Starting RGB matrix display in DEDICATED 2-COLOR TEST PATTERN mode...")
+        test_img = np.zeros((32, 64, 3), dtype=np.uint8)  # 2 panels wide
+        # Create test pattern for 2 panels
         test_img[0:16, 0:32] = [255, 0, 0]     # Panel 1: red
         test_img[16:32, 0:32] = [0, 255, 0]    # Panel 1: green
         test_img[0:16, 32:64] = [0, 0, 255]    # Panel 2: blue
         test_img[16:32, 32:64] = [255, 255, 0] # Panel 2: yellow
-        test_img[0:16, 64:96] = [255, 0, 255]  # Panel 3: magenta
-        test_img[16:32, 64:96] = [0, 255, 255] # Panel 3: cyan
-        test_img[0:16, 96:128] = [255, 255, 255] # Panel 4: white
-        test_img[16:32, 96:128] = [128, 128, 128] # Panel 4: gray
         matrix.SetImage(Image.fromarray(test_img))
         while True:
             time.sleep(1)
@@ -173,17 +164,13 @@ def matrix_loop():
         options = RGBMatrixOptions()
         options.rows = 32
         options.cols = 32
-        options.chain_length = 4  # Always 4 panels
+        options.chain_length = 2  # Only 2 panels
         options.multiplexing = 6
         options.hardware_mapping = 'adafruit-hat'
-        options.brightness = 30
-        # anti flickering stuff
-        options.pwm_lsb_nanoseconds = 490
-        options.gpio_slowdown = 4
-        options.pwm_bits = 8
+        options.brightness = 50
         matrix = RGBMatrix(options=options)
         
-        print(f"Starting RGB matrix display (Display ID: {DISPLAY_ID})...")
+        print(f"Starting RGB matrix display (Display ID: {DISPLAY_ID}, 2-Screen Pi)...")
         if USE_COORDINATOR:
             print(f"Using coordinator at {COORDINATOR_IP}:{COORDINATOR_PORT}")
         else:
@@ -216,7 +203,7 @@ def matrix_loop():
 
 def main():
     """Main function"""
-    print("JPG Cycle App for 4-Panel RGB Matrix (Client Mode)")
+    print("JPG Cycle App for 2-Panel RGB Matrix (Client Mode)")
     print(f"Exhibition folder: {EXHIBITION_FOLDER}")
     print(f"Display ID: {DISPLAY_ID}")
     
