@@ -21,7 +21,7 @@ os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 
 TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
 USE_COORDINATOR = True  # Set to True to use coordinator service
-COORDINATOR_IP = "192.168.1.100"  # IP of the coordinator Pi
+COORDINATOR_IP = "192.168.0.187"  # IP of the coordinator Pi
 COORDINATOR_PORT = 5001
 DISPLAY_ID = 2  # Set to 2 for the third Pi (2-screen Pi)
 
@@ -165,9 +165,16 @@ def matrix_loop():
         options.rows = 32
         options.cols = 32
         options.chain_length = 2  # Only 2 panels
-        options.multiplexing = 6
         options.hardware_mapping = 'adafruit-hat'
-        options.brightness = 50
+        options.brightness = 80
+        # anti-flickering stuff
+        # options.pwm_lsb_nanoseconds = 130
+        # options.gpio_slowdown = 4
+        # options.disable_hardware_pulsing = True
+        # options.pwm_bits = 11
+        options.pwm_lsb_nanoseconds = 300
+        options.gpio_slowdown = 2
+        options.pwm_bits = 8
         matrix = RGBMatrix(options=options)
         
         print(f"Starting RGB matrix display (Display ID: {DISPLAY_ID}, 2-Screen Pi)...")

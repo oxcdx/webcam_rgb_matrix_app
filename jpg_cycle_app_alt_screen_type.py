@@ -28,7 +28,7 @@ TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
 USE_COORDINATOR = True  # Set to True to use coordinator service
 COORDINATOR_IP = "192.168.0.186"  # IP of the coordinator Pi
 COORDINATOR_PORT = 5001
-DISPLAY_ID = 1  # Set to 0 for first Pi, 1 for second Pi, etc.
+DISPLAY_ID = 0  # Set to 0 for first Pi, 1 for second Pi, etc.
 
 # Global variables
 current_images = [None, None, None, None]  # Always 4 screens
