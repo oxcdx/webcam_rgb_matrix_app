@@ -21,7 +21,7 @@ EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
 app = Flask(__name__)
 
 # Configuration
-CYCLE_TIME = 120.0  # seconds for a full cycle (2 minutes)
+CYCLE_TIME = 15.0  # seconds for a full cycle (15 seconds for testing)
 INCREMENTAL_UPDATE_TIME = 2.0  # seconds between incremental updates
 NUM_DISPLAYS = 3  # number of Pi displays
 SCREENS_PER_DISPLAY = [4, 4, 2]  # screens per Pi: Pi#1=4, Pi#2=4, Pi#3=2
@@ -32,6 +32,8 @@ current_assignments = {}  # {display_id: [img1, img2, img3, img4]}
 next_cycle_images = []  # Next 10 images to cycle through
 image_index = 0
 cycle_start_time = time.time()
+# Track the number of cycles for Pi 2 linking logic
+cycle_count = 0
 last_incremental_update = time.time()
 current_screen_to_update = 0  # Which screen position to update next (0-9)
 coordinator_lock = threading.Lock()
@@ -58,30 +60,44 @@ def assign_images():
         return
     
     total_screens = sum(SCREENS_PER_DISPLAY)  # 4 + 4 + 2 = 10 screens
-    
+
+    # Prepare linking images (relative to EXHIBITION_FOLDER, e.g., 'linkings/filename.jpg')
+    linkings_folder = os.path.join(EXHIBITION_FOLDER, "linkings")
+    linkings_images = []
+    if os.path.exists(linkings_folder):
+        linkings_images = glob.glob(os.path.join(linkings_folder, "*.jpg"))
+        linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.jpeg")))
+        linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.JPG")))
+        linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.JPEG")))
+        linkings_images = [os.path.relpath(img, EXHIBITION_FOLDER) for img in linkings_images]
+
     with coordinator_lock:
         # Create initial assignments for each display
         screen_offset = 0
         for display_id in range(NUM_DISPLAYS):
             screens_for_this_display = SCREENS_PER_DISPLAY[display_id]
             display_images = []
-            
             for screen in range(screens_for_this_display):
                 img_idx = (image_index + screen_offset + screen) % len(image_files)
-                display_images.append(os.path.basename(image_files[img_idx]))
-            
+                rel_path = os.path.relpath(image_files[img_idx], EXHIBITION_FOLDER)
+                display_images.append(rel_path)
+            # For Pi 0 (display_id 0), after 4 images are chosen, replace one with a random linking image
+            if display_id == 0 and linkings_images and len(display_images) == 4:
+                replace_pos = random.randint(0, 3)
+                link_img = random.choice(linkings_images)
+                display_images[replace_pos] = link_img
             current_assignments[display_id] = display_images
             screen_offset += screens_for_this_display
-        
+
         # Prepare next cycle images (next 10 images after current ones)
         next_cycle_images = []
         for i in range(total_screens):
             img_idx = (image_index + total_screens + i) % len(image_files)
             next_cycle_images.append(os.path.basename(image_files[img_idx]))
-        
+
         # Reset incremental update counter
         current_screen_to_update = 0
-        
+
         print("Initial image assignments created")
 
 def update_single_image():
@@ -92,57 +108,88 @@ def update_single_image():
         return
     
     total_screens = sum(SCREENS_PER_DISPLAY)
-    
+
     with coordinator_lock:
         # Find which display and screen position this update affects
         screen_position = current_screen_to_update
-        
+
         # Map global screen position to display and local screen
         current_display = 0
         local_screen = screen_position
-        
+
         for display_id in range(NUM_DISPLAYS):
             screens_in_this_display = SCREENS_PER_DISPLAY[display_id]
             if local_screen < screens_in_this_display:
                 current_display = display_id
                 break
             local_screen -= screens_in_this_display
-        
+
         # Update that specific screen with the next image
         if current_display < len(current_assignments) and local_screen < len(current_assignments[current_display]):
             new_image = next_cycle_images[screen_position]
             current_assignments[current_display][local_screen] = new_image
-            
             print(f"Updated Display {current_display}, Screen {local_screen} with: {new_image[:20]}...")
-        
+
         # Move to next screen for next update
         current_screen_to_update = (current_screen_to_update + 1) % total_screens
 
 def start_new_cycle():
     """Start a new 2-minute cycle with fresh images"""
-    global image_index, next_cycle_images, current_screen_to_update, cycle_start_time
+    global image_index, next_cycle_images, current_screen_to_update, cycle_start_time, cycle_count
     
     total_screens = sum(SCREENS_PER_DISPLAY)
     
     with coordinator_lock:
         # Move to next set of images
         image_index = (image_index + total_screens * 2) % len(image_files)  # Skip ahead by 2 full sets
-        
+        # Increment cycle count
+        cycle_count += 1
+
         # Prepare new next cycle images
         next_cycle_images = []
         for i in range(total_screens):
             img_idx = (image_index + total_screens + i) % len(image_files)
             next_cycle_images.append(os.path.basename(image_files[img_idx]))
-        
+
+        # After preparing next_cycle_images, for Pi 0 and Pi 1, replace one of the first 4 and one of the next 4 with a linking image
+        linkings_folder = os.path.join(EXHIBITION_FOLDER, "linkings")
+        linkings_images = []
+        if os.path.exists(linkings_folder):
+            linkings_images = glob.glob(os.path.join(linkings_folder, "*.jpg"))
+            linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.jpeg")))
+            linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.JPG")))
+            linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.JPEG")))
+            linkings_images = [os.path.relpath(img, EXHIBITION_FOLDER) for img in linkings_images]
+        # Pi 0 (first 4 images)
+        if linkings_images and len(next_cycle_images) >= 4:
+            replace_pos_0 = random.randint(0, 3)
+            link_img_0 = random.choice(linkings_images)
+            next_cycle_images[replace_pos_0] = link_img_0
+        # Pi 1 (next 4 images)
+        if linkings_images and len(next_cycle_images) >= 8:
+            replace_pos_1 = random.randint(4, 7)
+            link_img_1 = random.choice(linkings_images)
+            next_cycle_images[replace_pos_1] = link_img_1
+
+        # Update Pi 2 (display_id 2) with the last two images from next_cycle_images
+        if len(next_cycle_images) >= 10:
+            pi2_images = next_cycle_images[8:10].copy()
+            # Every 4th cycle, replace one with a linking image if available
+            if cycle_count % 4 == 0 and linkings_images:
+                replace_pos_2 = random.randint(0, 1)
+                link_img_2 = random.choice(linkings_images)
+                pi2_images[replace_pos_2] = link_img_2
+            current_assignments[2] = pi2_images
+
         # Reset counters
         current_screen_to_update = 0
         cycle_start_time = time.time()
-        
+
         # Shuffle when we complete a full cycle through all images
         if image_index == 0 and len(image_files) > total_screens:
             random.shuffle(image_files)
             print("Shuffled image order for new cycle")
-        
+
         print(f"Started new 2-minute cycle at {datetime.now().strftime('%H:%M:%S')}")
         print(f"Next images to cycle: {[img[:15] + '...' for img in next_cycle_images[:5]]}...")
 
