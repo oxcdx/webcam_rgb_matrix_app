@@ -10,6 +10,9 @@ import threading
 import random
 import requests
 import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
@@ -26,7 +29,7 @@ os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 TOGGLE_4_SCREEN_MODE = True  # Set to False for 1-panel mode (now we always use 4 screens)
 TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
 USE_COORDINATOR = True  # Set to True to use coordinator service
-COORDINATOR_IP = "192.168.0.186"  # IP of the coordinator Pi
+COORDINATOR_IP = os.getenv("COORDINATOR_IP", "127.0.0.1")  # IP of the coordinator Pi
 COORDINATOR_PORT = 5001
 DISPLAY_ID = 0  # Set to 0 for first Pi, 1 for second Pi, etc.
 
