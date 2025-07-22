@@ -35,6 +35,13 @@ current_images = [None, None, None, None]  # Always 4 screens
 assigned_filenames = [None, None, None, None]  # Current assigned filenames
 last_coordinator_check = 0
 image_lock = threading.Lock()
+# Fallback cycling globals
+fallback_start_time = None
+fallback_last_update = 0
+fallback_indices = [0, 1, 2, 3]
+fallback_files = []
+# Fallback failure tracking
+fallback_fail_count = 0
 
 def fetch_coordinator_images():
     """Fetch current image assignments from coordinator"""
@@ -90,11 +97,17 @@ def load_and_resize_image(filename):
 
 def update_images():
     """Update the current images based on coordinator assignments"""
-    global current_images
-    
+    global current_images, fallback_start_time, fallback_last_update, fallback_indices, fallback_files, fallback_fail_count
+
     if USE_COORDINATOR:
         # Try to get assignments from coordinator
         if fetch_coordinator_images():
+            # Reset fallback tracking
+            fallback_fail_count = 0
+            fallback_start_time = None
+            fallback_last_update = 0
+            fallback_indices = [0, 1, 2, 3]
+            fallback_files = []
             with image_lock:
                 for screen in range(4):
                     if assigned_filenames[screen]:
@@ -102,28 +115,56 @@ def update_images():
                     else:
                         current_images[screen] = None
         else:
-            print("Coordinator unavailable, using fallback mode")
-            # Fallback to local cycling
-            fallback_files = load_image_files()
-            if fallback_files:
-                with image_lock:
-                    for screen in range(4):
-                        if screen < len(fallback_files):
-                            img_path = fallback_files[screen % len(fallback_files)]
-                            current_images[screen] = cv2.imread(img_path)
-                            if current_images[screen] is not None:
-                                current_images[screen] = cv2.resize(current_images[screen], (32, 32))
+            fallback_fail_count += 1
+            print(f"Coordinator unavailable, fail count: {fallback_fail_count}")
+            if fallback_fail_count >= 4:
+                # Only start fallback after 4 consecutive failures
+                if fallback_start_time is None:
+                    fallback_start_time = time.time()
+                    fallback_last_update = 0
+                    fallback_indices = [0, 1, 2, 3]
+                    fallback_files = load_image_files()
+                    with image_lock:
+                        for screen in range(4):
+                            if fallback_files and screen < len(fallback_files):
+                                img_path = fallback_files[fallback_indices[screen] % len(fallback_files)]
+                                img = cv2.imread(img_path)
+                                if img is not None:
+                                    current_images[screen] = cv2.resize(img, (32, 32))
+                                else:
+                                    current_images[screen] = None
+                            else:
+                                current_images[screen] = None
+                else:
+                    # Only start cycling after 2 minutes
+                    if time.time() - fallback_start_time > 120:
+                        # Update one image every 7 seconds
+                        if time.time() - fallback_last_update > 7:
+                            fallback_last_update = time.time()
+                            # Find which screen to update (round robin)
+                            next_screen = int(((fallback_last_update - fallback_start_time) // 7) % 4)
+                            if fallback_files and next_screen < len(fallback_indices):
+                                fallback_indices[next_screen] = (fallback_indices[next_screen] + 1) % len(fallback_files)
+                                img_path = fallback_files[fallback_indices[next_screen]]
+                                img = cv2.imread(img_path)
+                                with image_lock:
+                                    if img is not None:
+                                        current_images[next_screen] = cv2.resize(img, (32, 32))
+                                    else:
+                                        current_images[next_screen] = None
+            # If not enough failures, do nothing (keep last images)
     else:
         # Local mode (original behavior)
         fallback_files = load_image_files()
-        if fallback_files:
-            with image_lock:
-                for screen in range(4):
-                    if screen < len(fallback_files):
-                        img_path = fallback_files[screen % len(fallback_files)]
-                        current_images[screen] = cv2.imread(img_path)
-                        if current_images[screen] is not None:
-                            current_images[screen] = cv2.resize(current_images[screen], (32, 32))
+        with image_lock:
+            for screen in range(4):
+                if fallback_files and screen < len(fallback_files):
+                    img_path = fallback_files[screen % len(fallback_files)]
+                    img = cv2.imread(img_path)
+                    if img is not None:
+                        current_images[screen] = cv2.resize(img, (32, 32))
+                    else:
+                        current_images[screen] = None
 
 def create_matrix_image():
     """Create the image for the matrix display"""
