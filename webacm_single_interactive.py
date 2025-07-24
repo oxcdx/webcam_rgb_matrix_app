@@ -52,10 +52,10 @@ def main():
     options.led_rgb_sequence = "GBR"
     # options.pixel_mapper_config = "U-mapper"
     # options.pwm_bits = 6
-    options.pwm_lsb_nanoseconds = 300
+    options.pwm_lsb_nanoseconds = 200
     options.gpio_slowdown = 2
     options.pwm_bits = 8
-    options.brightness = 80
+    # options.brightness = 100
 
     matrix = RGBMatrix(options=options)
 
@@ -89,6 +89,12 @@ def main():
             if showing_camera:
                 elapsed = time.time() - last_show_time
                 if elapsed > 15:
+                    # Flash sequence: white/black/white, 0.3s each
+                    white_img = Image.new("RGB", (32, 32), (255, 255, 255))
+                    black_img = Image.new("RGB", (32, 32), (0, 0, 0))
+                    for img in [white_img, black_img, white_img]:
+                        matrix.SetImage(img)
+                        time.sleep(0.1)
                     showing_camera = False
                     showing_last_frame = True
                     last_frame_time = time.time()
@@ -159,6 +165,8 @@ def main():
                 try:
                     frame_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
                     image = Image.fromarray(frame_rgb)
+                    # Rotate the image 90 degrees clockwise
+                    image = image.rotate(-270, expand=True)
                 except Exception as e:
                     print(f"Image conversion error: {e}")
                     continue
@@ -167,17 +175,16 @@ def main():
                     print(f"Image size invalid: {image.size}")
                     continue
 
-                # Draw timer bar
-                bar_total = 16
-                bar_top = 15
-                # Shrink every 2 seconds, from both ends
-                shrink_steps = int(elapsed // 2)
+                # Draw vertical timer bar (shrinks from top and bottom)
+                bar_total = 30
+                bar_left = 15
+                shrink_steps = int(elapsed // 1)
                 bar_length = max(0, bar_total - shrink_steps * 2)  # 2 pixels from each end per step
                 if bar_length > 0:
-                    bar_left = (32 - bar_length) // 2
+                    bar_top = (32 - bar_length) // 2
                     image_with_bar = image.copy()
                     draw = ImageDraw.Draw(image_with_bar)
-                    draw.rectangle([bar_left, bar_top, bar_left + bar_length - 1, bar_top], fill=(255,0,0))
+                    draw.rectangle([bar_left, bar_top, bar_left, bar_top + bar_length - 1], fill=(255,0,0))
                 else:
                     image_with_bar = image.copy()
 
@@ -192,9 +199,22 @@ def main():
             # If showing last frame, check time
             if showing_last_frame:
                 elapsed = time.time() - last_frame_time
+                # After 15 seconds, allow interruption by Z or X key, otherwise show for up to 2 minutes
                 if elapsed > 15:
-                    showing_last_frame = False
-                    continue
+                    # Clear any queued key events from the first 15 seconds
+                    while show_camera_event.is_set():
+                        show_camera_event.clear()
+                    # Wait for Z or X key or timeout (2 minutes)
+                    interrupted = show_camera_event.wait(timeout=120 - elapsed)
+                    if interrupted:
+                        show_camera_event.clear()
+                        last_show_time = time.time()
+                        showing_camera = True
+                        showing_last_frame = False
+                        continue
+                    else:
+                        showing_last_frame = False
+                        continue
                 if last_frame_image is not None:
                     matrix.SetImage(last_frame_image)
                 else:
