@@ -1,0 +1,15 @@
+[Unit]
+Description=JPG Cycle App Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ox/webcam_rgb_matrix_app
+ExecStart=/home/ox/webcam_rgb_matrix_app/venv/bin/python /home/ox/webcam_rgb_matrix_app/jpg_cycle_app_2_screen.py
+Restart=always
+RestartSec=10
+#User=ox
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
