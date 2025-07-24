@@ -19,11 +19,9 @@ os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 
 # Configuration
-EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
-os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 
-# Configuration
-EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
+# Use /opt/exhibition for system-wide access
+EXHIBITION_FOLDER = "/opt/exhibition"
 os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 
 TOGGLE_4_SCREEN_MODE = True  # Set to False for 1-panel mode (now we always use 4 screens)
@@ -31,11 +29,12 @@ TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
 USE_COORDINATOR = True  # Set to True to use coordinator service
 COORDINATOR_IP = os.getenv("COORDINATOR_IP", "127.0.0.1")  # IP of the coordinator Pi
 COORDINATOR_PORT = 5001
-DISPLAY_ID = 0  # Set to 0 for first Pi, 1 for second Pi, etc.
+DISPLAY_ID = 1  # Set to 0 for first Pi, 1 for second Pi, etc.
 
 # Global variables
 current_images = [None, None, None, None]  # Always 4 screens
 assigned_filenames = [None, None, None, None]  # Current assigned filenames
+loaded_filenames = [None, None, None, None]  # Track last loaded filename for each screen
 last_coordinator_check = 0
 image_lock = threading.Lock()
 # Fallback cycling globals
@@ -85,12 +84,14 @@ def load_image_files():
 def load_and_resize_image(filename):
     """Load an image by filename and resize it to 32x32 for the LED matrix"""
     try:
-        image_path = os.path.join(EXHIBITION_FOLDER, filename)
+        # Allow subfolders, but sanitize to prevent directory traversal
+        safe_path = os.path.normpath(filename).lstrip(os.sep)
+        image_path = os.path.join(EXHIBITION_FOLDER, safe_path)
+        print(f"Trying to load image: {image_path}")
         img = cv2.imread(image_path)
         if img is None:
             print(f"Failed to load image: {image_path}")
             return None
-        
         # Resize to 32x32 for each screen
         resized = cv2.resize(img, (32, 32), interpolation=cv2.INTER_AREA)
         return resized
@@ -113,10 +114,15 @@ def update_images():
             fallback_files = []
             with image_lock:
                 for screen in range(4):
-                    if assigned_filenames[screen]:
-                        current_images[screen] = load_and_resize_image(assigned_filenames[screen])
+                    fname = assigned_filenames[screen]
+                    if fname:
+                        if loaded_filenames[screen] != fname:
+                            current_images[screen] = load_and_resize_image(fname)
+                            loaded_filenames[screen] = fname
+                        # else: keep current_images[screen] as is
                     else:
                         current_images[screen] = None
+                        loaded_filenames[screen] = None
         else:
             fallback_fail_count += 1
             print(f"Coordinator unavailable, fail count: {fallback_fail_count}")
@@ -176,7 +182,8 @@ def create_matrix_image():
         screen_images = []
         for i in range(4):
             if current_images[i] is not None:
-                screen_images.append(current_images[i])
+                img_rotated = cv2.rotate(current_images[i], cv2.ROTATE_90_COUNTERCLOCKWISE)
+                screen_images.append(img_rotated)
             else:
                 # Create a black 32x32 image as fallback
                 black_img = np.zeros((32, 32, 3), dtype=np.uint8)
