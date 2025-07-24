@@ -21,7 +21,7 @@ EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
 app = Flask(__name__)
 
 # Configuration
-CYCLE_TIME = 15.0  # seconds for a full cycle (15 seconds for testing)
+CYCLE_TIME = 120
 INCREMENTAL_UPDATE_TIME = 2.0  # seconds between incremental updates
 NUM_DISPLAYS = 3  # number of Pi displays
 SCREENS_PER_DISPLAY = [4, 4, 2]  # screens per Pi: Pi#1=4, Pi#2=4, Pi#3=2
@@ -136,6 +136,8 @@ def update_single_image():
 def start_new_cycle():
     """Start a new 2-minute cycle with fresh images"""
     global image_index, next_cycle_images, current_screen_to_update, cycle_start_time, cycle_count
+    # Store previous cycle's assignments for duplicate check
+    prev_assignments = {k: v.copy() for k, v in current_assignments.items()} if current_assignments else {}
     
     total_screens = sum(SCREENS_PER_DISPLAY)
     
@@ -145,11 +147,30 @@ def start_new_cycle():
         # Increment cycle count
         cycle_count += 1
 
-        # Prepare new next cycle images
+        # Prepare new next cycle images, avoiding exact filename repeats for each screen
         next_cycle_images = []
         for i in range(total_screens):
             img_idx = (image_index + total_screens + i) % len(image_files)
-            next_cycle_images.append(os.path.basename(image_files[img_idx]))
+            candidate = os.path.basename(image_files[img_idx])
+            # Check for exact filename repeat for this screen position
+            prev_screen_img = None
+            # Map i to display and local screen
+            disp = 0
+            local = i
+            for d, n in enumerate(SCREENS_PER_DISPLAY):
+                if local < n:
+                    disp = d
+                    break
+                local -= n
+            if prev_assignments and disp in prev_assignments and local < len(prev_assignments[disp]):
+                prev_screen_img = os.path.basename(prev_assignments[disp][local])
+            # If candidate matches previous, pick next available image
+            tries = 0
+            while prev_screen_img and candidate == prev_screen_img and tries < len(image_files):
+                img_idx = (img_idx + 1) % len(image_files)
+                candidate = os.path.basename(image_files[img_idx])
+                tries += 1
+            next_cycle_images.append(candidate)
 
         # After preparing next_cycle_images, for Pi 0 and Pi 1, replace one of the first 4 and one of the next 4 with a linking image
         linkings_folder = os.path.join(EXHIBITION_FOLDER, "linkings")
@@ -160,24 +181,42 @@ def start_new_cycle():
             linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.JPG")))
             linkings_images.extend(glob.glob(os.path.join(linkings_folder, "*.JPEG")))
             linkings_images = [os.path.relpath(img, EXHIBITION_FOLDER) for img in linkings_images]
-        # Pi 0 (first 4 images)
+
+        # Pi 0 (first 4 images) - no check needed
+        pi0_link_base = None
         if linkings_images and len(next_cycle_images) >= 4:
             replace_pos_0 = random.randint(0, 3)
             link_img_0 = random.choice(linkings_images)
             next_cycle_images[replace_pos_0] = link_img_0
-        # Pi 1 (next 4 images)
-        if linkings_images and len(next_cycle_images) >= 8:
-            replace_pos_1 = random.randint(4, 7)
-            link_img_1 = random.choice(linkings_images)
-            next_cycle_images[replace_pos_1] = link_img_1
+            pi0_link_base = os.path.basename(link_img_0).split('.')[0]
 
-        # Update Pi 2 (display_id 2) with the last two images from next_cycle_images
+        # Pi 1 (next 4 images) - must not match Pi 0's base
+        pi1_link_base = None
+        if linkings_images and len(next_cycle_images) >= 8:
+            filtered_linkings_1 = [img for img in linkings_images if not (pi0_link_base and pi0_link_base in os.path.basename(img))]
+            if filtered_linkings_1:
+                replace_pos_1 = random.randint(4, 7)
+                link_img_1 = random.choice(filtered_linkings_1)
+            else:
+                replace_pos_1 = random.randint(4, 7)
+                link_img_1 = random.choice(linkings_images)
+            next_cycle_images[replace_pos_1] = link_img_1
+            pi1_link_base = os.path.basename(link_img_1).split('.')[0]
+
+        # Pi 2 (every 4th cycle) - must not match Pi 0 or Pi 1's base
         if len(next_cycle_images) >= 10:
             pi2_images = next_cycle_images[8:10].copy()
-            # Every 4th cycle, replace one with a linking image if available
             if cycle_count % 4 == 0 and linkings_images:
-                replace_pos_2 = random.randint(0, 1)
-                link_img_2 = random.choice(linkings_images)
+                filtered_linkings_2 = [img for img in linkings_images if not (
+                    (pi0_link_base and pi0_link_base in os.path.basename(img)) or
+                    (pi1_link_base and pi1_link_base in os.path.basename(img))
+                )]
+                if filtered_linkings_2:
+                    replace_pos_2 = random.randint(0, 1)
+                    link_img_2 = random.choice(filtered_linkings_2)
+                else:
+                    replace_pos_2 = random.randint(0, 1)
+                    link_img_2 = random.choice(linkings_images)
                 pi2_images[replace_pos_2] = link_img_2
             current_assignments[2] = pi2_images
 
