@@ -22,10 +22,6 @@ sys.path.insert(0, BASE_DIR)
 EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
 os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
 
-# Configuration
-EXHIBITION_FOLDER = os.path.join(BASE_DIR, "exhibition")
-os.makedirs(EXHIBITION_FOLDER, exist_ok=True)
-
 TOGGLE_4_SCREEN_MODE = True  # Set to False for 1-panel mode (now we always use 4 screens)
 TOGGLE_TEST_PATTERN = False  # Set to True for 4-color test pattern
 USE_COORDINATOR = True  # Set to True to use coordinator service
@@ -36,6 +32,7 @@ DISPLAY_ID = 0  # Set to 0 for first Pi, 1 for second Pi, etc.
 # Global variables
 current_images = [None, None, None, None]  # Always 4 screens
 assigned_filenames = [None, None, None, None]  # Current assigned filenames
+loaded_filenames = [None, None, None, None]  # Track last loaded filename for each screen
 last_coordinator_check = 0
 image_lock = threading.Lock()
 fallback_start_time = None
@@ -112,10 +109,15 @@ def update_images():
             fallback_files = []
             with image_lock:
                 for screen in range(4):
-                    if assigned_filenames[screen]:
-                        current_images[screen] = load_and_resize_image(assigned_filenames[screen])
+                    fname = assigned_filenames[screen]
+                    if fname:
+                        if loaded_filenames[screen] != fname:
+                            current_images[screen] = load_and_resize_image(fname)
+                            loaded_filenames[screen] = fname
+                        # else: keep current_images[screen] as is
                     else:
                         current_images[screen] = None
+                        loaded_filenames[screen] = None
         else:
             fallback_fail_count += 1
             print(f"Coordinator unavailable, fail count: {fallback_fail_count}")
@@ -175,7 +177,8 @@ def create_matrix_image():
         screen_images = []
         for i in range(4):
             if current_images[i] is not None:
-                screen_images.append(current_images[i])
+                img_rotated = cv2.rotate(current_images[i], cv2.ROTATE_90_COUNTERCLOCKWISE)
+                screen_images.append(img_rotated)
             else:
                 # Create a black 32x32 image as fallback
                 black_img = np.zeros((32, 32, 3), dtype=np.uint8)
@@ -226,7 +229,7 @@ def matrix_loop():
         # options.pwm_bits = 11
         options.pwm_lsb_nanoseconds = 300
         options.gpio_slowdown = 2
-        options.pwm_bits = 8
+        options.pwm_bits = 7
         matrix = RGBMatrix(options=options)
         
         print(f"Starting RGB matrix display (Display ID: {DISPLAY_ID})...")
@@ -242,8 +245,10 @@ def matrix_loop():
         try:
             while True:
                 # Check for new assignments every few seconds
+                CHECK_INTERVAL = 1.0  # seconds
+                # Check for new assignments every few seconds
                 current_time = time.time()
-                if USE_COORDINATOR and current_time - last_coordinator_check > 1.0:
+                if USE_COORDINATOR and current_time - last_coordinator_check > CHECK_INTERVAL:
                     update_images()
                 
                 # Update display
@@ -253,7 +258,7 @@ def matrix_loop():
                 except Exception as e:
                     print(f"Error setting matrix image: {e}")
                 
-                time.sleep(0.1)
+                time.sleep(0.5)
                 
         except KeyboardInterrupt:
             print("\nExiting...")
