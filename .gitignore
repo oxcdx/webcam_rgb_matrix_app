@@ -52,3 +52,6 @@ uploads/*
 # exhibition/*.jpg
 # exhibition/*.jpeg
 # exhibition/*.png
+
+# AI assistant instructions (canonical copy lives in docs/CLAUDE.md)
+CLAUDE.md
