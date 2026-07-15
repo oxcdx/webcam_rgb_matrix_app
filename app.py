@@ -26,6 +26,16 @@ import io
 
 isSavingToFTP = False
 
+DEFAULT_EFFECT_PARAMS = {
+    "brightness": 1.0,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "blur": 0,
+    "hue_shift": 0,
+    "colorize": 0,
+    "invert": 0,
+}
+
 UPLOAD_ROOT = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
@@ -65,18 +75,17 @@ frame_version = 0
 # on this with zero CPU instead of re-sending a still image on a timer - there
 # should never be any "animation" while a still image is being shown.
 display_update_event = threading.Event()
-effect_params = {
-    "brightness": 1.0,
-    "contrast": 1.0,
-    "saturation": 1.0,
-    "blur": 0
-}
+effect_params = dict(DEFAULT_EFFECT_PARAMS)
 params_lock = threading.Lock()
 last_captured_mosaic_path = None
 display_captured = False
 display_lock = threading.Lock()
 matrix_still_image = None
 matrix_still_lock = threading.Lock()
+# Bumped every time a new image becomes the "current" one (upload or capture).
+# Used to detect and ignore stale /set_matrix_effect_params requests that were
+# queued for a previous image but only complete after a newer image replaced it.
+capture_generation = 0
 
 # Scanner mode configuration
 USE_SCANNER_MODE = True  # Set to True to use scanner instead of webcam
@@ -92,6 +101,14 @@ matrix_scanner_image = None
 matrix_scanner_version = None
 matrix_scanner_lock = threading.Lock()
 
+
+def reset_effect_params():
+    with params_lock:
+        effect_params.clear()
+        effect_params.update(DEFAULT_EFFECT_PARAMS)
+    print(f"[effects] reset_effect_params -> {effect_params}", flush=True)
+    return dict(effect_params)
+
 def gen_frames():
     global latest_frame
     last_sent_version = -1
@@ -106,7 +123,8 @@ def gen_frames():
             if ret:
                 frameWeb = buffer.tobytes()
                 yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frameWeb + b'\r\n')
+                       b'Content-Type: image/jpeg\r\n'
+                       b'Content-Length: ' + str(len(frameWeb)).encode() + b'\r\n\r\n' + frameWeb + b'\r\n')
         last_sent_version = current_version
 
 
@@ -160,8 +178,14 @@ def refresh_matrix_still_image():
     with display_lock:
         use_captured = display_captured
         captured_path = last_captured_mosaic_path
+        generation = capture_generation
 
     if not use_captured or not captured_path or not os.path.exists(captured_path):
+        with display_lock:
+            if capture_generation != generation:
+                # A newer capture/upload superseded this one while we were
+                # checking - let its own refresh call be the source of truth.
+                return
         with matrix_still_lock:
             matrix_still_image = None
         return
@@ -170,6 +194,13 @@ def refresh_matrix_still_image():
         params = dict(effect_params)
 
     still_image = build_matrix_still_image(captured_path, params)
+
+    with display_lock:
+        if capture_generation != generation:
+            # A newer capture/upload completed while this (now stale) build
+            # was running - discard it so it can't clobber the newer image.
+            return
+
     with matrix_still_lock:
         matrix_still_image = still_image
 
@@ -187,6 +218,9 @@ def refresh_matrix_scanner_image():
         version = scanner_frame_version
 
     if frame is None:
+        with scanner_lock:
+            if scanner_frame_version != version:
+                return
         with matrix_scanner_lock:
             matrix_scanner_image = None
             matrix_scanner_version = None
@@ -210,6 +244,12 @@ def refresh_matrix_scanner_image():
     tiled = np.concatenate([resized, resized, resized, resized], axis=1)
     frame_rgb = cv2.cvtColor(tiled, cv2.COLOR_BGR2RGB)
     still_image = Image.fromarray(frame_rgb)
+
+    with scanner_lock:
+        if scanner_frame_version != version:
+            # A newer upload landed while we were computing this (now stale)
+            # frame - discard it so it can't overwrite the newer content.
+            return
 
     with frame_lock:
         latest_frame = frame.copy()
@@ -357,6 +397,41 @@ def matrix_loop():
             print(f"Matrix live display error: {e}")
             continue
 
+@app.route("/scanner_snapshot/<folder>/<filename>/<kind>")
+def scanner_snapshot(folder, filename, kind):
+    """Serve a single, complete (non-streaming) image straight from a saved
+    upload file on disk - the same reliable pattern as /processed_mosaic
+    (which has always displayed correctly). Used to refresh the main-page
+    webcam/webcam-mosaic <img> tags after an upload, instead of relying on
+    the persistent MJPEG stream (which has repeated boundary/staleness
+    issues for this static, upload-driven use case).
+    """
+    img_path = os.path.join(UPLOAD_ROOT, folder, filename)
+    if not os.path.exists(img_path):
+        return "", 404
+
+    img = cv2.imread(img_path)
+    if img is None:
+        return "", 404
+
+    if kind == "mosaic":
+        h, w = img.shape[:2]
+        min_dim = min(h, w)
+        if min_dim <= 0:
+            return "", 404
+        start_x = max((w - min_dim) // 2, 0)
+        start_y = max((h - min_dim) // 2, 0)
+        cropped = img[start_y:start_y + min_dim, start_x:start_x + min_dim]
+        small = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_LINEAR)
+        out = cv2.resize(small, (min_dim, min_dim), interpolation=cv2.INTER_NEAREST)
+    else:
+        out = img
+
+    ret, buffer = cv2.imencode('.jpg', out)
+    if not ret:
+        return "", 500
+    return Response(buffer.tobytes(), mimetype='image/jpeg')
+
 @app.route("/upload_scanner_image", methods=["POST"])
 def upload_scanner_image():
     global scanner_image, latest_frame, mosaic_frame, scanner_filename
@@ -370,12 +445,13 @@ def upload_scanner_image():
 
     # Sanitize filename
     safe_filename = "".join(c if c.isalnum() or c in "-_" else "_" for c in user_filename)
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
     folder = f"{timestamp}-{safe_filename}"
     save_dir = os.path.join(UPLOAD_ROOT, folder)
     os.makedirs(save_dir, exist_ok=True)
 
     try:
+        print(f"[scanner] upload request filename={user_filename!r} mode={USE_SCANNER_MODE}", flush=True)
         # Read image data
         image_data = file.read()
         nparr = np.frombuffer(image_data, np.uint8)
@@ -418,17 +494,22 @@ def upload_scanner_image():
             scanner_filename = safe_filename  # Store the scanner filename
             scanner_frame_version += 1
 
+        reset_effect_params()
+        print(f"[scanner] upload processed folder={folder} mosaic={small_path} scanner_filename={scanner_filename}", flush=True)
+
         # Set the captured mosaic path and flag for editor compatibility
         mosaic_path = small_path  # Use the 180x180 as the main for manipulation
-        global last_captured_mosaic_path, display_captured
+        global last_captured_mosaic_path, display_captured, capture_generation
         with display_lock:
             last_captured_mosaic_path = mosaic_path
             display_captured = True
+            capture_generation += 1
+            current_generation = capture_generation
         refresh_matrix_still_image()
         refresh_matrix_scanner_image()
         display_update_event.set()
 
-        return jsonify(success=True, message="Scanner image uploaded and processed successfully", folder=folder, filename=safe_filename)
+        return jsonify(success=True, message="Scanner image uploaded and processed successfully", folder=folder, filename=safe_filename, mosaic_filename=f"{safe_filename}_180x180.jpg", effect_params=dict(DEFAULT_EFFECT_PARAMS), generation=current_generation)
     except Exception as e:
         return jsonify(success=False, error=str(e))
 
@@ -437,8 +518,17 @@ def set_scanner_mode():
     global USE_SCANNER_MODE
     data = request.json
     USE_SCANNER_MODE = data.get("enabled", False)
+    print(f"[scanner] set_scanner_mode enabled={USE_SCANNER_MODE}", flush=True)
+    if not USE_SCANNER_MODE:
+        reset_effect_params()
+        global display_captured
+        with display_lock:
+            display_captured = False
+        with matrix_still_lock:
+            global matrix_still_image
+            matrix_still_image = None
     display_update_event.set()
-    return jsonify(success=True, scanner_mode=USE_SCANNER_MODE)
+    return jsonify(success=True, scanner_mode=USE_SCANNER_MODE, effect_params=dict(effect_params))
 
 @app.route("/get_scanner_mode")
 def get_scanner_mode():
@@ -463,7 +553,8 @@ def video_feed_mosaic():
                 if ret:
                     frameWeb = buffer.tobytes()
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frameWeb + b'\r\n')
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-Length: ' + str(len(frameWeb)).encode() + b'\r\n\r\n' + frameWeb + b'\r\n')
             last_sent_version = current_version
     return Response(gen_mosaic_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -509,7 +600,8 @@ def video_feed_effect():
                 if ret:
                     frameWeb = buffer.tobytes()
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frameWeb + b'\r\n')
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-Length: ' + str(len(frameWeb)).encode() + b'\r\n\r\n' + frameWeb + b'\r\n')
             last_sent_version = current_version
     return Response(gen_effect_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -526,7 +618,7 @@ def set_effect_params():
 
 @app.route("/capture_image", methods=["POST"])
 def capture_image():
-    global latest_frame, mosaic_frame, last_captured_mosaic_path, display_captured, scanner_filename, USE_SCANNER_MODE
+    global latest_frame, mosaic_frame, last_captured_mosaic_path, display_captured, scanner_filename, USE_SCANNER_MODE, capture_generation
     data = request.json
     
     # In scanner mode, use the stored scanner filename instead of prompting
@@ -537,7 +629,7 @@ def capture_image():
         if not base:
             return jsonify(success=False, error="Missing base name")
     
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
     folder = f"{timestamp}-{base}"
     save_dir = os.path.join(UPLOAD_ROOT, folder)
     os.makedirs(save_dir, exist_ok=True)
@@ -554,9 +646,11 @@ def capture_image():
     with display_lock:
         last_captured_mosaic_path = mosaic_path
         display_captured = True
+        capture_generation += 1
+        current_generation = capture_generation
     refresh_matrix_still_image()
     display_update_event.set()
-    return jsonify(success=True, folder=folder)
+    return jsonify(success=True, folder=folder, generation=current_generation)
 
 @app.route("/uploads/<folder>/<filename>")
 def uploaded_file(folder, filename):
@@ -626,6 +720,15 @@ def matrix_edit():
 def set_matrix_effect_params():
     global effect_params
     data = request.json
+
+    requested_generation = data.get("generation")
+    if requested_generation is not None:
+        with display_lock:
+            current_generation = capture_generation
+        if int(requested_generation) != current_generation:
+            print(f"[effects] ignoring stale set_matrix_effect_params generation={requested_generation} current={current_generation}", flush=True)
+            return jsonify(success=True, ignored=True)
+
     with params_lock:
         effect_params["brightness"] = float(data.get("brightness", 1.0))
         effect_params["contrast"] = float(data.get("contrast", 1.0))
@@ -633,6 +736,7 @@ def set_matrix_effect_params():
         effect_params["hue_shift"] = int(data.get("hue_shift", 0))
         effect_params["colorize"] = int(data.get("colorize", 0))
         effect_params["invert"] = int(data.get("invert", 0))
+    print(f"[effects] set_matrix_effect_params -> {dict(effect_params)}", flush=True)
     refresh_matrix_still_image()
     display_update_event.set()
     return jsonify(success=True)
@@ -712,7 +816,7 @@ def video_feed():
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 def run_flask():
-    app.run(host="0.0.0.0", debug=True, use_reloader=False, port=5000)
+    app.run(host="0.0.0.0", debug=True, use_reloader=False, port=5000, threaded=True)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
