@@ -9,7 +9,9 @@
 <body data-bs-theme="dark">
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
         <div class="container-fluid">
-            <h1 class="navbar-brand">Tracing Together</h1>
+            <div class="ps-2">
+                <h1 class="navbar-brand">Tracing Together</h1>
+            </div>
             <div class="text-end">
                 <div class="btn-group">
                     <button id="scanner-mode-btn" class="btn btn-info">Scanner Mode: Off</button>
@@ -23,12 +25,12 @@
         <!-- Scanner Mode Controls -->
         <div id="scanner-controls" class="row mb-4" style="display: none;">
             <div class="col-12 text-center">
-                <div class="card bg-secondary">
-                    <div class="card-body">
-                        <h5 class="card-title">Scanner Mode</h5>
-                        <p class="card-text">Use your Windows scanner to capture images</p>
-                        <div class="d-flex justify-content-center gap-3">
-                            <button id="upload-btn" class="btn btn-primary btn-lg">Upload Scanned Image</button>
+                <div class="card bg-transparent border-0 text-white">
+                    <div class="card-body p-0">
+                        <h5 class="card-title visually-hidden">Scanner Mode</h5>
+                        <div class="d-flex justify-content-end gap-3">
+                            <button id="upload-btn" class="btn btn-primary">Upload | Auto Crop</button>
+                            <button id="manual-upload-btn" class="btn btn-primary">Upload | Manual</button>
                             <input type="file" id="file-input" accept="image/*" style="display: none;">    
                         </div>
                     </div>
@@ -144,11 +146,11 @@
         }
 
         function logEffectControlState(label) {
-            console.log(`[effects] ${label}`, getEffectControlState());
+            // console.log(`[effects] ${label}`, getEffectControlState());
         }
 
         function resetEffectControls(effectState = DEFAULT_EFFECT_STATE) {
-            console.log("[effects] resetEffectControls before", getEffectControlState(), effectState);
+            // console.log("[effects] resetEffectControls before", getEffectControlState(), effectState);
             const brightnessInput = document.getElementById("brightness");
             const contrastInput = document.getElementById("contrast");
             const saturationInput = document.getElementById("saturation");
@@ -182,7 +184,7 @@
         setTimeout(initializeButtons, 100);
 
         document.getElementById('effectModal').addEventListener('show.bs.modal', function () {
-            console.log("[effects] modal show -> reset defaults", getEffectControlState(), lastCapture);
+            // console.log("[effects] modal show -> reset defaults", getEffectControlState(), lastCapture);
             resetEffectControls(DEFAULT_EFFECT_STATE);
             if (lastCapture) {
                 updateProcessedMosaic();
@@ -208,7 +210,7 @@
         // Scanner mode toggle
         document.getElementById('scanner-mode-btn').onclick = function() {
             scannerMode = !scannerMode;
-            console.log("[scanner] toggle clicked", { enabled: scannerMode });
+            // console.log("[scanner] toggle clicked", { enabled: scannerMode });
             resetEffectControls(DEFAULT_EFFECT_STATE);
             syncDefaultEffectsToCurrentCapture();
             fetch("/set_scanner_mode", {
@@ -218,7 +220,7 @@
             })
             .then(res => res.json())
             .then(data => {
-                console.log("[scanner] toggle response", data);
+                // console.log("[scanner] toggle response", data);
                 if (data.success) {
                     updateScannerModeUI();
                     // Update scanner filename when mode changes
@@ -231,10 +233,21 @@
             });
         };
 
-        // Scanner functionality - simple upload only
+        function openScannerFilePicker(skipAutoCrop) {
+            const fileInput = document.getElementById('file-input');
+            fileInput.dataset.skipAutoCrop = skipAutoCrop ? '1' : '0';
+            fileInput.click();
+        }
+
+        // Scanner functionality - upload with optional auto-crop bypass
         document.getElementById('upload-btn').onclick = function() {
-            console.log("[scanner] upload button clicked");
-            document.getElementById('file-input').click();
+            // console.log("[scanner] upload button clicked");
+            openScannerFilePicker(false);
+        };
+
+        document.getElementById('manual-upload-btn').onclick = function() {
+            // console.log("[scanner] manual upload button clicked");
+            openScannerFilePicker(true);
         };
 
         document.getElementById('file-input').onchange = function(event) {
@@ -251,18 +264,20 @@
                 const formData = new FormData();
                 formData.append('image', file);
                 formData.append('filename', filename);
+                formData.append('skip_auto_crop', event.target.dataset.skipAutoCrop === '1' ? '1' : '0');
                 uploadScannerImage(formData);
             }
+            event.target.dataset.skipAutoCrop = '0';
         };
         
         function uploadScannerImage(formData) {
             const requestToken = ++scannerUploadRequestToken;
-            console.log("[scanner] upload starting", {
-                before: getEffectControlState(),
-                scannerMode,
-                scannerFilename,
-                hasLastCapture: Boolean(lastCapture)
-            });
+            // console.log("[scanner] upload starting", {
+            //     before: getEffectControlState(),
+            //     scannerMode,
+            //     scannerFilename,
+            //     hasLastCapture: Boolean(lastCapture)
+            // });
             fetch("/upload_scanner_image", {
                 method: "POST",
                 body: formData
@@ -270,10 +285,10 @@
             .then(res => res.json())
             .then(data => {
                 if (requestToken !== scannerUploadRequestToken) {
-                    console.log("[scanner] ignoring stale upload response", data);
+                    // console.log("[scanner] ignoring stale upload response", data);
                     return;
                 }
-                console.log("[scanner] upload response", data);
+                // console.log("[scanner] upload response", data);
                 if (data.success) {
                     alert("Scanner image uploaded and auto-cropped successfully!");
                     
@@ -321,7 +336,7 @@
                 alert("No image has been captured yet.");
                 return;
             }
-            console.log("[effects] show modal", getEffectControlState(), lastCapture);
+            // console.log("[effects] show modal", getEffectControlState(), lastCapture);
             fetch("/matrix_edit"); // <--- Add this line
             updateProcessedMosaic();
             effectModal.show();
@@ -464,7 +479,7 @@
             })
             .then(res => res.json())
             .then(data => {
-                console.log(data); // <-- Add this line for debugging
+                // console.log(data); // <-- Add this line for debugging
                 if (data.success) {
                     alert("Image saved and uploaded successfully!");
                 } else {
