@@ -172,6 +172,112 @@ def build_matrix_still_image(image_path, params):
     frame_rgb = cv2.cvtColor(tiled, cv2.COLOR_BGR2RGB)
     return Image.fromarray(frame_rgb)
 
+def auto_crop_scanned_drawing(img):
+    """Detect the black square drawing border on an A4 portrait scan and
+    return a straightened, cropped, then 90-degree-right-rotated image.
+
+    Expected geometry (A4 portrait, ~21cm wide):
+      - square ~11.8-12.5cm x 11.8-12.5cm
+      - ~1cm from top, ~4.5cm from left, ~4cm from right
+    The actual scan can be off by a few mm and rotated by 1-2 degrees, so we
+    search a generous region around the expected location, find the black
+    square via contour detection, and use its precise corner points to both
+    straighten (rotate) and tightly crop the image (no left-over white
+    margin). Falls back to the fixed-offset crop if detection fails.
+    """
+    h, w = img.shape[:2]
+    pixels_per_cm = w / 21.0
+
+    expected_left = 4.5 * pixels_per_cm
+    expected_top = 1.0 * pixels_per_cm
+    expected_size = 12.2 * pixels_per_cm
+    margin = 2.5 * pixels_per_cm  # generous search slack for scanner misalignment
+
+    roi_x0 = max(int(expected_left - margin), 0)
+    roi_y0 = max(int(expected_top - margin), 0)
+    roi_x1 = min(int(expected_left + expected_size + margin), w)
+    roi_y1 = min(int(expected_top + expected_size + margin), h)
+
+    roi = img[roi_y0:roi_y1, roi_x0:roi_x1]
+    if roi.shape[0] <= 0 or roi.shape[1] <= 0:
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # Otsu picks a threshold adaptively per-scan instead of a fixed guess, so
+    # the border is reliably captured across different scanner exposures.
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # Close small gaps in the border line (dust, faint ink, JPEG artifacts)
+    # so it forms one continuous closed loop for contour detection.
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    expected_area = expected_size * expected_size
+    best_rect = None
+    best_contour = None
+    best_score = None
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < expected_area * 0.3 or area > expected_area * 2.5:
+            continue
+        rect = cv2.minAreaRect(c)  # ((cx, cy), (rw, rh), angle)
+        rw, rh = rect[1]
+        if rw <= 0 or rh <= 0:
+            continue
+        if max(rw, rh) / min(rw, rh) > 1.25:
+            continue  # not square-ish enough
+        score = abs(area - expected_area)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_rect = rect
+            best_contour = c
+
+    if best_rect is None:
+        left_offset_px = int(expected_left)
+        top_offset_px = int(expected_top)
+        crop_size_px = int(expected_size)
+        right_edge = min(left_offset_px + crop_size_px, w)
+        bottom_edge = min(top_offset_px + crop_size_px, h)
+        cropped = img
+        if right_edge > left_offset_px and bottom_edge > top_offset_px:
+            cropped = img[top_offset_px:bottom_edge, left_offset_px:right_edge]
+        return cv2.rotate(cropped, cv2.ROTATE_90_CLOCKWISE)
+
+    (cx_roi, cy_roi), (rw, rh), angle = best_rect
+    if rw < rh:
+        angle += 90
+    if angle > 45:
+        angle -= 90
+    if abs(angle) > 5:
+        angle = 0  # implausible skew - likely a false match, don't rotate
+
+    cx, cy = cx_roi + roi_x0, cy_roi + roi_y0
+
+    rot_mat = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
+    rotated_full = cv2.warpAffine(img, rot_mat, (w, h), flags=cv2.INTER_LINEAR,
+                                   borderMode=cv2.BORDER_REPLICATE)
+
+    # Transform the detected contour's own points (not just an approximate
+    # average side length) into the straightened image's coordinate space,
+    # then take a tight axis-aligned bounding box of them. This crops exactly
+    # to the black border with no left-over white margin, and doesn't force
+    # a perfectly square result if the detected border wasn't perfectly square.
+    contour_full = best_contour.reshape(-1, 2).astype('float32') + np.array([roi_x0, roi_y0], dtype='float32')
+    ones = np.ones((contour_full.shape[0], 1), dtype='float32')
+    contour_h = np.hstack([contour_full, ones])
+    rotated_pts = contour_h @ rot_mat.T
+
+    x0 = int(round(rotated_pts[:, 0].min()))
+    y0 = int(round(rotated_pts[:, 1].min()))
+    x1 = int(round(rotated_pts[:, 0].max()))
+    y1 = int(round(rotated_pts[:, 1].max()))
+
+    x0c, y0c, x1c, y1c = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
+    if x1c <= x0c or y1c <= y0c:
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+
+    cropped = rotated_full[y0c:y1c, x0c:x1c]
+    return cv2.rotate(cropped, cv2.ROTATE_90_CLOCKWISE)
 
 def refresh_matrix_still_image():
     global matrix_still_image
@@ -438,6 +544,7 @@ def upload_scanner_image():
     # Accept both 'image' and 'file' for compatibility
     file = request.files.get('image') or request.files.get('file')
     user_filename = request.form.get('filename', '').strip()
+    skip_auto_crop = request.form.get('skip_auto_crop', '0') == '1'
     if not file or file.filename == '':
         return jsonify(success=False, error="No image file selected")
     if not user_filename:
@@ -459,7 +566,8 @@ def upload_scanner_image():
         if img is None:
             return jsonify(success=False, error="Invalid image format")
 
-        # Auto-crop A4 scanned image to specific region
+        # Auto-crop A4 scanned image to specific region unless the caller
+        # explicitly asked for a manual upload.
         # h, w = img.shape[:2]
         # pixels_per_cm = w / 21.0
         # left_offset_px = int(4.3 * pixels_per_cm)
@@ -471,6 +579,9 @@ def upload_scanner_image():
         #     cropped_img = img[top_offset_px:bottom_edge, left_offset_px:right_edge]
         #     if cropped_img.shape[0] > 0 and cropped_img.shape[1] > 0:
         #         img = cropped_img
+
+        if not skip_auto_crop:
+            img = auto_crop_scanned_drawing(img)
                 
         # Save original (cropped) image
         original_path = os.path.join(save_dir, f"{safe_filename}.jpg")
