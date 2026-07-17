@@ -450,11 +450,26 @@ def matrix_loop():
             else:
                 print("Failed to prepare captured matrix image.")
 
-            # Nothing changes until an explicit event (slider release, button
-            # click, new capture, mode toggle) - block with zero CPU instead of
-            # re-sending the same still image on a timer.
-            display_update_event.wait()
-            display_update_event.clear()
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                with frame_lock:
+                    latest_frame = frame.copy()
+
+                h, w = latest_frame.shape[:2]
+                min_dim = min(h, w)
+                if min_dim > 0:
+                    start_x = max((w - min_dim) // 2, 0)
+                    start_y = max((h - min_dim) // 2, 0)
+                    cropped = latest_frame[start_y:start_y+min_dim, start_x:start_x+min_dim]
+                    if cropped.shape[0] > 0 and cropped.shape[1] > 0:
+                        small = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_LINEAR)
+                        mosaic = cv2.resize(small, (min_dim, min_dim), interpolation=cv2.INTER_NEAREST)
+                        with frame_lock:
+                            mosaic_frame = mosaic.copy()
+                            frame_version += 1
+                            frame_lock.notify_all()
+
+            time.sleep(0.01)
             continue
 
         # --- Scanner mode preview (static image, not the effects editor) ---
