@@ -197,6 +197,25 @@ def build_matrix_still_image(image_path, params):
     frame_rgb = cv2.cvtColor(tiled, cv2.COLOR_BGR2RGB)
     return Image.fromarray(frame_rgb)
 
+
+def build_tiled_mosaic_image(img):
+    if img is None:
+        return None
+
+    height, width = img.shape[:2]
+    min_dim = min(height, width)
+    if min_dim <= 0:
+        return None
+
+    start_x = max((width - min_dim) // 2, 0)
+    start_y = max((height - min_dim) // 2, 0)
+    cropped = img[start_y:start_y + min_dim, start_x:start_x + min_dim]
+    if cropped.shape[0] <= 0 or cropped.shape[1] <= 0:
+        return None
+
+    small = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_LINEAR)
+    return cv2.resize(small, (min_dim, min_dim), interpolation=cv2.INTER_NEAREST)
+
 def auto_crop_scanned_drawing(img):
     """Detect the black square drawing border on an A4 portrait scan and
     return a straightened, cropped, then 90-degree-right-rotated image.
@@ -755,9 +774,10 @@ def capture_image():
     global latest_frame, mosaic_frame, last_captured_mosaic_path, display_captured, scanner_filename, USE_SCANNER_MODE, capture_generation
     data = request.json
     
-    # In scanner mode, use the stored scanner filename instead of prompting
-    if USE_SCANNER_MODE and scanner_filename:
+    if USE_SCANNER_MODE:
         base = scanner_filename
+        if not base:
+            return jsonify(success=False, error="No scanner image available")
     else:
         base = data.get("base", "").strip()
         if not base:
@@ -767,11 +787,28 @@ def capture_image():
     folder = f"{timestamp}-{base}"
     save_dir = os.path.join(UPLOAD_ROOT, folder)
     os.makedirs(save_dir, exist_ok=True)
-    with frame_lock:
-        main_img = latest_frame.copy() if latest_frame is not None else None
-        mosaic_img = mosaic_frame.copy() if mosaic_frame is not None else None
-    if main_img is None or mosaic_img is None:
-        return jsonify(success=False, error="No image available")
+
+    if USE_SCANNER_MODE:
+        with scanner_lock:
+            main_img = scanner_image.copy() if scanner_image is not None else None
+        if main_img is None:
+            with display_lock:
+                fallback_path = last_captured_mosaic_path
+            if fallback_path and os.path.exists(fallback_path):
+                main_img = cv2.imread(fallback_path)
+        if main_img is None:
+            return jsonify(success=False, error="No scanner image available")
+
+        mosaic_img = build_tiled_mosaic_image(main_img)
+        if mosaic_img is None:
+            return jsonify(success=False, error="No scanner mosaic available")
+    else:
+        with frame_lock:
+            main_img = latest_frame.copy() if latest_frame is not None else None
+            mosaic_img = mosaic_frame.copy() if mosaic_frame is not None else None
+        if main_img is None or mosaic_img is None:
+            return jsonify(success=False, error="No image available")
+
     main_path = os.path.join(save_dir, f"{timestamp}-{base}.jpg")
     mosaic_path = os.path.join(save_dir, f"{timestamp}-{base}-mosaic.jpg")
     cv2.imwrite(main_path, main_img)

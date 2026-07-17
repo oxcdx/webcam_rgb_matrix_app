@@ -359,12 +359,14 @@
 
         document.getElementById("capture-btn").onclick = function() {
             let base;
-            
-            // In scanner mode with a filename, use that filename without prompting
-            if (scannerMode && scannerFilename) {
+
+            if (scannerMode) {
+                if (!scannerFilename) {
+                    alert("No scanner image is loaded yet.");
+                    return;
+                }
                 base = scannerFilename;
             } else {
-                // Otherwise, prompt for a name
                 base = prompt("Enter a name for this capture:");
                 if (!base) return;
             }
