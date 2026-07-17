@@ -133,18 +133,16 @@ def apply_effects_to_bgr(img, params):
     neutral_mask = channel_spread <= 10
     luminance = neutral_source.astype('float32').mean(axis=2) / 255.0
 
-    img_hsv = cv2.cvtColor((img * 255).astype('uint8'), cv2.COLOR_BGR2HSV).astype('float32')
-    img_hsv[..., 1] *= saturation
-    img_hsv[..., 1] = np.clip(img_hsv[..., 1], 0, 255)
-
     if highlights > 0:
         highlight_mask = np.clip((luminance - 0.35) / 0.65, 0, 1)
         highlight_mask = (highlight_mask * highlight_mask) * neutral_mask.astype('float32')
-        darken = 1.0 - np.clip(0.9 * highlights, 0, 0.95)
+        darken = 1.0 - np.clip(1.8 * highlights, 0, 1.0)
         img *= 1.0 - (1.0 - darken) * highlight_mask[..., None]
         img = np.clip(img, 0, 1)
 
     img_hsv = cv2.cvtColor((img * 255).astype('uint8'), cv2.COLOR_BGR2HSV).astype('float32')
+    img_hsv[..., 1] *= saturation
+    img_hsv[..., 1] = np.clip(img_hsv[..., 1], 0, 255)
 
     if colorize:
         img_hsv[..., 0] = hue_shift
@@ -854,6 +852,7 @@ def save_final_image():
     data = request.json
     folder = data.get("folder")
     filename = data.get("filename")
+    target = data.get("target", "web")
     params = data.get("params", {})
     if not folder or not filename:
         return jsonify(success=False, error="Missing folder or filename")
@@ -871,7 +870,9 @@ def save_final_image():
     # Save as -final.jpg
     base, ext = os.path.splitext(filename)
     final_filename = f"{base}-final.jpg"
-    final_path = os.path.join(UPLOAD_ROOT, folder, final_filename)
+    target_folder = folder if target != "led" else os.path.join(folder, "LED")
+    final_path = os.path.join(UPLOAD_ROOT, target_folder, final_filename)
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
     cv2.imwrite(final_path, img)
 
     # --- FTP upload ---
@@ -882,6 +883,12 @@ def save_final_image():
                 ftp.login(FTP_USER, FTP_PASS)
                 ftp.prot_p()
                 ftp.cwd(FTP_TARGET_DIR)
+                if target == "led":
+                    try:
+                        ftp.cwd("LED")
+                    except Exception:
+                        ftp.mkd("LED")
+                        ftp.cwd("LED")
                 with open(final_path, "rb") as f:
                     ftp.storbinary(f"STOR {final_filename}", f)
         except Exception as e:

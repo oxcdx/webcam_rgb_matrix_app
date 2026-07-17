@@ -96,7 +96,14 @@
                     <button id="colorize-btn" class="btn btn-warning w-100 mb-2">Colorize: Off</button>
                 </div>
                 <div class="mb-2">
-                    <button id="save-final-btn" class="btn btn-primary w-100">Save Final Image</button>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <button id="save-final-btn" class="btn btn-primary w-100">Save Web</button>
+                        </div>
+                        <div class="col-6">
+                            <button id="save-led-btn" class="btn btn-secondary w-100">Save LED</button>
+                        </div>
+                    </div>
                 </div>
               </div>
             </div>
@@ -475,7 +482,7 @@
             sendMatrixEffectParams();
         };
 
-        document.getElementById("save-final-btn").onclick = function() {
+        function saveFinalImage(target) {
             if (!lastCapture) return;
             const params = getSliderValues();
             fetch("/save_final_image", {
@@ -484,23 +491,30 @@
                 body: JSON.stringify({
                     folder: lastCapture.folder,
                     filename: lastCapture.filename,
-                    params: params
+                    params: params,
+                    target: target
                 })
             })
             .then(res => res.json())
             .then(data => {
                 // console.log(data); // <-- Add this line for debugging
                 if (data.success) {
-                    alert("Image saved and uploaded successfully!");
+                    alert(target === "led" ? "LED image saved and uploaded successfully!" : "Web image saved and uploaded successfully!");
                 } else {
                     alert("Error: " + data.error);
                 }
-                effectModal.hide(); // Always close the modal
             })
             .catch(err => {
                 alert("Network or server error: " + err);
-                effectModal.hide();
             });
+        }
+
+        document.getElementById("save-final-btn").onclick = function() {
+            saveFinalImage("web");
+        };
+
+        document.getElementById("save-led-btn").onclick = function() {
+            saveFinalImage("led");
         };
     });
     </script>
