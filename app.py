@@ -158,6 +158,10 @@ def apply_effects_to_bgr(img, params):
 
     return img
 
+
+def rotate_matrix_image(image):
+    return image.rotate(-90, expand=True)
+
 def gen_frames():
     global latest_frame
     last_sent_version = -1
@@ -465,7 +469,7 @@ def matrix_loop():
                     still_image = matrix_still_image
 
             if still_image is not None:
-                matrix.SetImage(still_image)
+                matrix.SetImage(rotate_matrix_image(still_image))
             else:
                 print("Failed to prepare captured matrix image.")
 
@@ -513,7 +517,7 @@ def matrix_loop():
                     still_image = matrix_scanner_image
 
             if still_image is not None:
-                matrix.SetImage(still_image)
+                matrix.SetImage(rotate_matrix_image(still_image))
             else:
                 print("Failed to prepare scanner matrix image.")
 
@@ -557,7 +561,7 @@ def matrix_loop():
             img_128x32 = np.concatenate([resized, resized, resized, resized], axis=1)
             frame_rgb = cv2.cvtColor(img_128x32, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(frame_rgb)
-            matrix.SetImage(image)
+            matrix.SetImage(rotate_matrix_image(image))
         except Exception as e:
             print(f"Matrix live display error: {e}")
             continue
