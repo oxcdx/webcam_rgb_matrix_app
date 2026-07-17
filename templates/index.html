@@ -125,6 +125,7 @@
 
         let scannerMode = false;
         let scannerFilename = null;
+        let scannerFolder = null;
         let lastCapture = null;
         let colorize = false;
         let invert = false;
@@ -137,6 +138,7 @@
             .then(data => {
                 scannerMode = data.scanner_mode;
                 scannerFilename = data.scanner_filename;
+                scannerFolder = data.scanner_folder;
                 updateScannerModeUI();
             });
 
@@ -210,6 +212,8 @@
         function updateScannerModeUI() {
             const btn = document.getElementById('scanner-mode-btn');
             const controls = document.getElementById('scanner-controls');
+            const webcam = document.getElementById('webcam');
+            const webcamMosaic = document.getElementById('webcam-mosaic');
             
             btn.textContent = "Scanner Mode: " + (scannerMode ? "On" : "Off");
             btn.classList.toggle("btn-info", !scannerMode);
@@ -217,8 +221,14 @@
             
             if (scannerMode) {
                 controls.style.display = 'block';
+                if (scannerFolder && scannerFilename) {
+                    webcam.src = `/scanner_snapshot/${scannerFolder}/${scannerFilename}.jpg/original?t=${Date.now()}`;
+                    webcamMosaic.src = `/scanner_snapshot/${scannerFolder}/${scannerFilename}_180x180.jpg/mosaic?t=${Date.now()}`;
+                }
             } else {
                 controls.style.display = 'none';
+                webcam.src = "{{ url_for('video_feed') }}";
+                webcamMosaic.src = "{{ url_for('video_feed_mosaic') }}";
             }
         }
 
@@ -243,6 +253,7 @@
                         .then(res => res.json())
                         .then(data => {
                             scannerFilename = data.scanner_filename;
+                            scannerFolder = data.scanner_folder;
                         });
                 }
             });
@@ -308,6 +319,7 @@
                     alert("Scanner image uploaded and auto-cropped successfully!");
                     
                     // Store the scanner filename for future captures
+                    scannerFolder = data.folder;
                     scannerFilename = data.filename;
                     
                     // Set lastCapture so the editor can work with the scanner image
@@ -328,12 +340,7 @@
                     // (/processed_mosaic pattern) instead of the persistent
                     // MJPEG stream, which kept showing the previous upload.
                     if (data.folder) {
-                        const originalFilename = data.filename + ".jpg";
-                        const mosaicFilename = data.mosaic_filename || (data.filename + "_180x180.jpg");
-                        document.getElementById('webcam').src =
-                            `/scanner_snapshot/${data.folder}/${originalFilename}/original?t=${Date.now()}`;
-                        document.getElementById('webcam-mosaic').src =
-                            `/scanner_snapshot/${data.folder}/${mosaicFilename}/mosaic?t=${Date.now()}`;
+                        updateScannerModeUI();
                     }
                 } else {
                     alert("Error: " + data.error);

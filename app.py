@@ -92,6 +92,7 @@ capture_generation = 0
 USE_SCANNER_MODE = True  # Set to True to use scanner instead of webcam
 scanner_image = None
 scanner_filename = None  # Store the current scanner image filename
+scanner_folder = None
 scanner_lock = threading.Lock()
 scanner_frame_version = 0  # Bumped whenever a new scanner image is uploaded
 
@@ -158,10 +159,6 @@ def apply_effects_to_bgr(img, params):
 
     return img
 
-
-def rotate_matrix_image(image):
-    return image.rotate(-90, expand=True)
-
 def gen_frames():
     global latest_frame
     last_sent_version = -1
@@ -198,6 +195,7 @@ def build_matrix_still_image(image_path, params):
     cropped = img[start_y:start_y + min_dim, start_x:start_x + min_dim]
     resized = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_AREA)
     tiled = np.concatenate([resized, resized, resized, resized], axis=1)
+    tiled = rotate_for_matrix(tiled)
     frame_rgb = cv2.cvtColor(tiled, cv2.COLOR_BGR2RGB)
     return Image.fromarray(frame_rgb)
 
@@ -219,6 +217,10 @@ def build_tiled_mosaic_image(img):
 
     small = cv2.resize(cropped, (32, 32), interpolation=cv2.INTER_LINEAR)
     return cv2.resize(small, (min_dim, min_dim), interpolation=cv2.INTER_NEAREST)
+
+
+def rotate_for_matrix(img):
+    return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
 
 def auto_crop_scanned_drawing(img):
     """Detect the black square drawing border on an A4 portrait scan and
@@ -396,6 +398,7 @@ def refresh_matrix_scanner_image():
 
     resized = cv2.resize(cropped, (32, 32))
     tiled = np.concatenate([resized, resized, resized, resized], axis=1)
+    tiled = rotate_for_matrix(tiled)
     frame_rgb = cv2.cvtColor(tiled, cv2.COLOR_BGR2RGB)
     still_image = Image.fromarray(frame_rgb)
 
@@ -469,7 +472,7 @@ def matrix_loop():
                     still_image = matrix_still_image
 
             if still_image is not None:
-                matrix.SetImage(rotate_matrix_image(still_image))
+                matrix.SetImage(still_image)
             else:
                 print("Failed to prepare captured matrix image.")
 
@@ -517,7 +520,7 @@ def matrix_loop():
                     still_image = matrix_scanner_image
 
             if still_image is not None:
-                matrix.SetImage(rotate_matrix_image(still_image))
+                matrix.SetImage(still_image)
             else:
                 print("Failed to prepare scanner matrix image.")
 
@@ -559,9 +562,10 @@ def matrix_loop():
         try:
             resized = cv2.resize(cropped, (32, 32))
             img_128x32 = np.concatenate([resized, resized, resized, resized], axis=1)
+            img_128x32 = rotate_for_matrix(img_128x32)
             frame_rgb = cv2.cvtColor(img_128x32, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(frame_rgb)
-            matrix.SetImage(rotate_matrix_image(image))
+            matrix.SetImage(image)
         except Exception as e:
             print(f"Matrix live display error: {e}")
             continue
@@ -603,7 +607,7 @@ def scanner_snapshot(folder, filename, kind):
 
 @app.route("/upload_scanner_image", methods=["POST"])
 def upload_scanner_image():
-    global scanner_image, latest_frame, mosaic_frame, scanner_filename
+    global scanner_image, latest_frame, mosaic_frame, scanner_filename, scanner_folder
     # Accept both 'image' and 'file' for compatibility
     file = request.files.get('image') or request.files.get('file')
     user_filename = request.form.get('filename', '').strip()
@@ -666,6 +670,7 @@ def upload_scanner_image():
         with scanner_lock:
             scanner_image = img_180.copy()
             scanner_filename = safe_filename  # Store the scanner filename
+            scanner_folder = folder
             scanner_frame_version += 1
 
         reset_effect_params()
@@ -706,10 +711,11 @@ def set_scanner_mode():
 
 @app.route("/get_scanner_mode")
 def get_scanner_mode():
-    global scanner_filename
+    global scanner_filename, scanner_folder
     with scanner_lock:
         current_filename = scanner_filename
-    return jsonify(scanner_mode=USE_SCANNER_MODE, scanner_filename=current_filename)
+        current_folder = scanner_folder
+    return jsonify(scanner_mode=USE_SCANNER_MODE, scanner_filename=current_filename, scanner_folder=current_folder)
 
 @app.route("/video_feed_mosaic")
 def video_feed_mosaic():
