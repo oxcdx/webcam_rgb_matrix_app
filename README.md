@@ -11,6 +11,11 @@ A Python application for displaying images and test patterns on RGB LED matrix p
   - Single image test mode
   - Image cycling mode
   - 4-color test pattern mode
+- **Realtime Webcam Display**: Stream live webcam feed directly to the matrix via GStreamer
+- **Realtime Effects**: Adjust brightness, contrast, saturation, and blur via a Flask web UI
+- **Interactive Keyboard Control**: Trigger display and toggle invert mode using a physical USB keyboard (evdev)
+- **Multi-Pi Coordination**: Coordinate image cycling across multiple Raspberry Pi displays with no repetition
+- **Grid Visualisation**: Web UI for monitoring panel image assignments across displays in real time
 - **Flexible Configuration**: Easy toggles for different panel configurations and display modes
 - **Multiplexing Support**: Built-in support for different RGB matrix multiplexing modes
 
@@ -25,7 +30,13 @@ A Python application for displaying images and test patterns on RGB LED matrix p
 
 ```bash
 # Install required Python packages
-pip install opencv-python pillow numpy
+pip install opencv-python pillow numpy flask
+
+# For realtime webcam apps (GStreamer pipeline)
+sudo apt install python3-gst-1.0 gstreamer1.0-tools gstreamer1.0-plugins-good
+
+# For interactive keyboard control (webacm_single_interactive.py)
+pip install evdev
 
 # Install RGB Matrix library (follow official instructions)
 # https://github.com/hzeller/rpi-rgb-led-matrix
@@ -34,9 +45,16 @@ pip install opencv-python pillow numpy
 ## File Structure
 
 - `app.py` - Main webcam/scanner application with multi-panel support
+- `app-realtime-effects-working-slow.py` - Flask + webcam app with realtime effect controls; 2-panel chained (16×32, U-mapper)
+- `app-realitime-scanner-version.py` - Flask + still image app with realtime effect controls; single 32×32 panel
+- `webacm_single_interactive.py` - Headless webcam display for single 32×32 panel; keyboard-triggered via evdev
 - `jpg_cycle_app.py` - JPG cycling application for 4-panel mode
+- `jpg_cycle_app_2_screen.py` - JPG cycling application for 2-panel mode
 - `jpg_cycle_app_alt_screen_type.py` - Flexible display app with multiple modes
+- `image_coordinator.py` - Flask service that coordinates image cycling across multiple Pi displays with no repetition
+- `visualise_grid.py` - Flask web UI for monitoring panel image assignments across displays
 - `webcam_rgb_matrix.py` - Core webcam functionality
+- `setup_pi.py` - Raspberry Pi setup/configuration script
 - `exhibition/` - Folder containing JPG images to display
 - `uploads/` - Folder for uploaded/processed images
 - `static/` - Web interface assets
@@ -65,6 +83,90 @@ MULTIPLEX_MODE = 0            # Multiplexing mode (0-7)
 - `7`: Kaler2020 multiplexing
 
 ## Usage
+
+### Realtime Webcam Apps
+
+Both realtime apps use a GStreamer pipeline for camera capture and expose a Flask web UI on port 5000.
+
+#### Effects app — 2-panel chained (16×32, U-mapper)
+```bash
+sudo python3 app-realtime-effects-working-slow.py
+```
+
+#### Scanner version -- single 32x32 panel
+```bash
+sudo python3 app-realitime-scanner-version.py
+```
+
+### Running app.py with sudo (production)
+
+The main `app.py` must run as root for LED matrix GPIO access. However, the `rpi-rgb-led-matrix` library **drops privileges to uid 1 (daemon)** after hardware init, so Flask runs as an unprivileged user.
+
+**One-time setup:**
+```bash
+# Create venv with system site-packages (for rpi-rgb-led-matrix)
+sudo bash /opt/webcam_rgb_matrix_app/setup_venv.sh
+
+# Fix file permissions so daemon user can read templates/static and write uploads
+sudo chmod 755 /opt/webcam_rgb_matrix_app/templates/ /opt/webcam_rgb_matrix_app/static/
+sudo chmod -R a+r /opt/webcam_rgb_matrix_app/
+sudo chmod -R a+rwX /opt/webcam_rgb_matrix_app/uploads/
+```
+
+**Run:**
+```bash
+bash /opt/webcam_rgb_matrix_app/run.sh
+```
+
+**Why permissions matter:**
+- `RGBMatrix()` init requires root (GPIO / `/dev/mem`)
+- After init, the library drops to uid 1 (daemon) for safety
+- Flask template rendering, static file serving, and image uploads all happen after the privilege drop
+- Without world-readable permissions on `templates/` and `static/`, Flask gets `PermissionError`
+- Without world-writable on `uploads/`, image saves fail
+
+**If you copy new files to /opt/, always re-run:**
+```bash
+sudo chmod 755 /opt/webcam_rgb_matrix_app/templates/ /opt/webcam_rgb_matrix_app/static/
+sudo chmod -R a+r /opt/webcam_rgb_matrix_app/
+sudo chmod -R a+rwX /opt/webcam_rgb_matrix_app/uploads/
+```
+
+#### Web endpoints (both realtime Flask apps)
+| Endpoint | Description |
+|---|---|
+| `/` | Main web UI |
+| `/video_feed` | Raw webcam MJPEG stream |
+| `/video_feed_mosaic` | Pixelated mosaic MJPEG stream |
+| `/video_feed_effect` | Effect-processed MJPEG stream |
+| `/set_effect_params` | POST JSON to update effect parameters |
+
+**Effect parameters** (POST JSON to `/set_effect_params`):
+```json
+{ "brightness": 1.0, "contrast": 1.0, "saturation": 1.0, "blur": 0, "highlights": 0.0 }
+```
+
+#### Interactive keyboard-controlled display
+```bash
+# Requires a SayoDevice USB keyboard connected (evdev path set in script)
+sudo python3 webacm_single_interactive.py
+# Any key: show camera feed
+# Z: normal mode  |  X: invert mode
+```
+
+### Image Coordinator (multi-Pi)
+```bash
+# Run on a central Pi or server to coordinate images across all displays
+python3 image_coordinator.py
+# Manages 3 Pis by default (4 + 4 + 2 screens).
+# Configure NUM_DISPLAYS and SCREENS_PER_DISPLAY at the top of the file.
+```
+
+### Grid Visualiser
+```bash
+python3 visualise_grid.py
+# Connects to image_coordinator and shows current panel assignments in browser
+```
 
 ### 1. Single Panel Display
 ```bash

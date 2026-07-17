@@ -1,15 +1,146 @@
 /* Bootstrap overrides and theming go here */
 :root {
-    /* Example: Change Bootstrap primary color */
     --bs-primary: #0033cc;
     --bs-primary-rgb: 0, 51, 204;
-    --bs-border-radius: 0.5rem;
+    --bs-link-color: #0033cc;
+    --bs-link-hover-color: #0028a3;
+    --bs-focus-ring-color: rgba(0, 51, 204, 0.25);
+    --bs-btn-primary-bg: #0033cc;
+    --bs-btn-primary-border-color: #0033cc;
+    --bs-btn-primary-hover-bg: #0028a3;
+    --bs-btn-primary-hover-border-color: #002593;
+    --bs-btn-primary-active-bg: #002593;
+    --bs-btn-primary-active-border-color: #002184;
+    --bs-border-radius: 0;
+    --bs-border-radius-sm: 0;
+    --bs-border-radius-lg: 0;
+    --bs-border-radius-xl: 0;
+    --bs-border-radius-xxl: 0;
+    --bs-border-radius-2xl: 0;
+    --bs-border-radius-pill: 0;
+    --bs-btn-border-radius: 0;
+    --bs-btn-border-radius-sm: 0;
+    --bs-btn-border-radius-lg: 0;
+    --bs-form-control-border-radius: 0;
+    --bs-form-select-border-radius: 0;
+    --bs-form-range-thumb-border-radius: 0;
+    --bs-card-border-radius: 0;
+    --bs-modal-border-radius: 0;
+    --bs-dropdown-border-radius: 0;
+    --bs-alert-border-radius: 0;
+    --bs-badge-border-radius: 0;
+    --bs-progress-border-radius: 0;
+    --bs-toast-border-radius: 0;
+    --bs-tooltip-border-radius: 0;
+    --bs-popover-border-radius: 0;
+    --bs-offcanvas-border-radius: 0;
+    --bs-list-group-border-radius: 0;
+    --bs-pagination-border-radius: 0;
+    --bs-nav-pills-border-radius: 0;
+    --bs-navbar-toggler-border-radius: 0;
+    --bs-thumbnail-border-radius: 0;
+    --bs-accordion-border-radius: 0;
+    --bs-accordion-inner-border-radius: 0;
+    --bs-input-group-border-radius: 0;
 }
 
 [data-bs-theme="dark"] {
+    --bs-primary: #0033cc;
     --bs-primary-rgb: 0, 51, 204;
+    --bs-link-color: #0033cc;
+    --bs-link-hover-color: #66a3ff;
     --bs-body-bg: #000;
+
+.btn-primary,
+.btn-check:checked + .btn-primary,
+.btn-check:active + .btn-primary,
+.btn:first-child:active,
+.btn-primary.active,
+.show > .btn-primary.dropdown-toggle {
+    --bs-btn-color: #fff;
+    --bs-btn-bg: #0033cc;
+    --bs-btn-border-color: #0033cc;
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: #0028a3;
+    --bs-btn-hover-border-color: #002593;
+    --bs-btn-focus-shadow-rgb: 0, 51, 204;
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: #002593;
+    --bs-btn-active-border-color: #002184;
+    --bs-btn-disabled-color: #fff;
+    --bs-btn-disabled-bg: #0033cc;
+    --bs-btn-disabled-border-color: #0033cc;
 }
+
+.btn-outline-primary {
+    --bs-btn-color: #0033cc;
+    --bs-btn-border-color: #0033cc;
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: #0033cc;
+    --bs-btn-hover-border-color: #0033cc;
+    --bs-btn-focus-shadow-rgb: 0, 51, 204;
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: #0033cc;
+    --bs-btn-active-border-color: #0033cc;
+    --bs-btn-disabled-color: #0033cc;
+    --bs-btn-disabled-border-color: #0033cc;
+}
+
+.link-primary {
+    color: #0033cc;
+}
+
+.link-primary:hover,
+.link-primary:focus {
+    color: #0028a3;
+}
+
+.bg-primary,
+.text-bg-primary {
+    background-color: #0033cc !important;
+}
+
+.text-primary,
+.link-primary {
+    color: #0033cc !important;
+}
+
+.border-primary {
+    border-color: #0033cc !important;
+}
+}
+
+/* .rounded,
+.rounded-top,
+.rounded-end,
+.rounded-bottom,
+.rounded-start,
+.rounded-circle,
+.rounded-pill,
+.btn,
+.form-control,
+.form-select,
+.input-group-text,
+.card,
+.modal-content,
+.dropdown-menu,
+.alert,
+.badge,
+.progress,
+.toast,
+.tooltip,
+.popover,
+.pagination,
+.page-link,
+.nav-pills .nav-link,
+.navbar-toggler,
+.accordion,
+.accordion-item,
+.list-group,
+.offcanvas,
+.thumbnail {
+    border-radius: 0;
+} */
 
 /* Custom styles from index.html */
 .square-crop {
@@ -26,8 +157,6 @@
     min-height: 150px;
     max-height: calc(100vh - 140px);
     max-width: calc(100vh - 140px);
-    box-shadow:
-        0 0 4px 4px rgba(255,255,255,0.2);
 }
 .square-crop img {
     width: 100%;

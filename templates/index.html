@@ -9,7 +9,9 @@
 <body data-bs-theme="dark">
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
         <div class="container-fluid">
-            <h1 class="navbar-brand">Tracing Together</h1>
+            <div class="ps-2">
+                <h1 class="navbar-brand">Tracing Together</h1>
+            </div>
             <div class="text-end">
                 <div class="btn-group">
                     <button id="scanner-mode-btn" class="btn btn-info">Scanner Mode: Off</button>
@@ -23,12 +25,12 @@
         <!-- Scanner Mode Controls -->
         <div id="scanner-controls" class="row mb-4" style="display: none;">
             <div class="col-12 text-center">
-                <div class="card bg-secondary">
-                    <div class="card-body">
-                        <h5 class="card-title">Scanner Mode</h5>
-                        <p class="card-text">Use your Windows scanner to capture images</p>
-                        <div class="d-flex justify-content-center gap-3">
-                            <button id="upload-btn" class="btn btn-primary btn-lg">📁 Upload Scanned Image</button>
+                <div class="card bg-transparent border-0 text-white">
+                    <div class="card-body p-0">
+                        <h5 class="card-title visually-hidden">Scanner Mode</h5>
+                        <div class="d-flex justify-content-end gap-3">
+                            <button id="upload-btn" class="btn btn-primary">Upload | Auto Crop</button>
+                            <button id="manual-upload-btn" class="btn btn-primary">Upload | Manual</button>
                             <input type="file" id="file-input" accept="image/*" style="display: none;">    
                         </div>
                     </div>
@@ -80,6 +82,10 @@
                     <input type="range" class="form-range" min="0.0" max="2.0" step="0.01" id="saturation" value="1.0">
                 </div>
                 <div class="mb-2">
+                    <label for="highlights" class="form-label">Highlights</label>
+                    <input type="range" class="form-range" min="0.0" max="1.5" step="0.01" id="highlights" value="0.0">
+                </div>
+                <div class="mb-2">
                     <button id="invert-btn" class="btn btn-outline-light w-100 mb-2">Invert: Off</button>
                 </div>
                 <div class="mb-2">
@@ -100,11 +106,23 @@
     </div>
     <script>
     document.addEventListener("DOMContentLoaded", function() {
+        const DEFAULT_EFFECT_STATE = {
+            brightness: "1.0",
+            contrast: "1.0",
+            saturation: "1.0",
+            highlights: "0.0",
+            hue_shift: "0",
+            colorize: 0,
+            invert: 0
+        };
+
         let scannerMode = false;
         let scannerFilename = null;
         let lastCapture = null;
         let colorize = false;
         let invert = false;
+        let scannerUploadRequestToken = 0;
+        let processedMosaicRequestToken = 0;
 
         // Initialize scanner mode state
         fetch("/get_scanner_mode")
@@ -121,8 +139,66 @@
             updateInvertButton();
         }
 
+        function getEffectControlState() {
+            return {
+                brightness: document.getElementById("brightness").value,
+                contrast: document.getElementById("contrast").value,
+                saturation: document.getElementById("saturation").value,
+                highlights: document.getElementById("highlights").value,
+                hue_shift: document.getElementById("hue-shift").value,
+                colorize,
+                invert
+            };
+        }
+
+        function logEffectControlState(label) {
+            // console.log(`[effects] ${label}`, getEffectControlState());
+        }
+
+        function resetEffectControls(effectState = DEFAULT_EFFECT_STATE) {
+            // console.log("[effects] resetEffectControls before", getEffectControlState(), effectState);
+            const brightnessInput = document.getElementById("brightness");
+            const contrastInput = document.getElementById("contrast");
+            const saturationInput = document.getElementById("saturation");
+            const highlightsInput = document.getElementById("highlights");
+            const hueShiftInput = document.getElementById("hue-shift");
+
+            brightnessInput.value = effectState.brightness;
+            contrastInput.value = effectState.contrast;
+            saturationInput.value = effectState.saturation;
+            highlightsInput.value = effectState.highlights;
+            hueShiftInput.value = effectState.hue_shift;
+            colorize = Boolean(effectState.colorize);
+            invert = Boolean(effectState.invert);
+            updateColorizeButton();
+            updateInvertButton();
+
+            [brightnessInput, contrastInput, saturationInput, highlightsInput, hueShiftInput].forEach(input => {
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+
+            logEffectControlState("resetEffectControls after");
+        }
+
+        function syncDefaultEffectsToCurrentCapture() {
+            logEffectControlState("syncDefaultEffectsToCurrentCapture before");
+            updateProcessedMosaic();
+            sendMatrixEffectParams();
+            logEffectControlState("syncDefaultEffectsToCurrentCapture after");
+        }
+
         // Call initialization when DOM is ready
         setTimeout(initializeButtons, 100);
+
+        document.getElementById('effectModal').addEventListener('show.bs.modal', function () {
+            // console.log("[effects] modal show -> reset defaults", getEffectControlState(), lastCapture);
+            resetEffectControls(DEFAULT_EFFECT_STATE);
+            if (lastCapture) {
+                updateProcessedMosaic();
+                sendMatrixEffectParams();
+            }
+        });
 
         function updateScannerModeUI() {
             const btn = document.getElementById('scanner-mode-btn');
@@ -142,6 +218,9 @@
         // Scanner mode toggle
         document.getElementById('scanner-mode-btn').onclick = function() {
             scannerMode = !scannerMode;
+            // console.log("[scanner] toggle clicked", { enabled: scannerMode });
+            resetEffectControls(DEFAULT_EFFECT_STATE);
+            syncDefaultEffectsToCurrentCapture();
             fetch("/set_scanner_mode", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -149,6 +228,7 @@
             })
             .then(res => res.json())
             .then(data => {
+                // console.log("[scanner] toggle response", data);
                 if (data.success) {
                     updateScannerModeUI();
                     // Update scanner filename when mode changes
@@ -161,9 +241,21 @@
             });
         };
 
-        // Scanner functionality - simple upload only
+        function openScannerFilePicker(skipAutoCrop) {
+            const fileInput = document.getElementById('file-input');
+            fileInput.dataset.skipAutoCrop = skipAutoCrop ? '1' : '0';
+            fileInput.click();
+        }
+
+        // Scanner functionality - upload with optional auto-crop bypass
         document.getElementById('upload-btn').onclick = function() {
-            document.getElementById('file-input').click();
+            // console.log("[scanner] upload button clicked");
+            openScannerFilePicker(false);
+        };
+
+        document.getElementById('manual-upload-btn').onclick = function() {
+            // console.log("[scanner] manual upload button clicked");
+            openScannerFilePicker(true);
         };
 
         document.getElementById('file-input').onchange = function(event) {
@@ -180,17 +272,31 @@
                 const formData = new FormData();
                 formData.append('image', file);
                 formData.append('filename', filename);
+                formData.append('skip_auto_crop', event.target.dataset.skipAutoCrop === '1' ? '1' : '0');
                 uploadScannerImage(formData);
             }
+            event.target.dataset.skipAutoCrop = '0';
         };
         
         function uploadScannerImage(formData) {
+            const requestToken = ++scannerUploadRequestToken;
+            // console.log("[scanner] upload starting", {
+            //     before: getEffectControlState(),
+            //     scannerMode,
+            //     scannerFilename,
+            //     hasLastCapture: Boolean(lastCapture)
+            // });
             fetch("/upload_scanner_image", {
                 method: "POST",
                 body: formData
             })
             .then(res => res.json())
             .then(data => {
+                if (requestToken !== scannerUploadRequestToken) {
+                    // console.log("[scanner] ignoring stale upload response", data);
+                    return;
+                }
+                // console.log("[scanner] upload response", data);
                 if (data.success) {
                     alert("Scanner image uploaded and auto-cropped successfully!");
                     
@@ -201,13 +307,27 @@
                     if (data.folder) {
                         lastCapture = {
                             folder: data.folder,
-                            filename: data.folder + "-mosaic.jpg"
+                            filename: data.mosaic_filename || (data.folder + "-mosaic.jpg"),
+                            generation: data.generation
                         };
                     }
-                    
-                    // Refresh the video feeds to show the new image
-                    document.getElementById('webcam').src = "{{ url_for('video_feed') }}?" + new Date().getTime();
-                    document.getElementById('webcam-mosaic').src = "{{ url_for('video_feed_mosaic') }}?" + new Date().getTime();
+
+                    resetEffectControls(DEFAULT_EFFECT_STATE);
+                    syncDefaultEffectsToCurrentCapture();
+                    logEffectControlState("after upload UI sync");
+
+                    // Refresh the main-page images using the same reliable,
+                    // stateless single-image endpoint the modal preview uses
+                    // (/processed_mosaic pattern) instead of the persistent
+                    // MJPEG stream, which kept showing the previous upload.
+                    if (data.folder) {
+                        const originalFilename = data.filename + ".jpg";
+                        const mosaicFilename = data.mosaic_filename || (data.filename + "_180x180.jpg");
+                        document.getElementById('webcam').src =
+                            `/scanner_snapshot/${data.folder}/${originalFilename}/original?t=${Date.now()}`;
+                        document.getElementById('webcam-mosaic').src =
+                            `/scanner_snapshot/${data.folder}/${mosaicFilename}/mosaic?t=${Date.now()}`;
+                    }
                 } else {
                     alert("Error: " + data.error);
                 }
@@ -224,6 +344,7 @@
                 alert("No image has been captured yet.");
                 return;
             }
+            // console.log("[effects] show modal", getEffectControlState(), lastCapture);
             fetch("/matrix_edit"); // <--- Add this line
             updateProcessedMosaic();
             effectModal.show();
@@ -251,13 +372,11 @@
                 if (data.success) {
                     lastCapture = {
                         folder: data.folder,
-                        filename: data.folder + "-mosaic.jpg"
+                        filename: data.folder + "-mosaic.jpg",
+                        generation: data.generation
                     };
-                    document.getElementById("hue-shift").value = 0; // Reset on new capture
-                    colorize = false;
-                    invert = false;
-                    updateColorizeButton();
-                    updateInvertButton();
+                    resetEffectControls(DEFAULT_EFFECT_STATE);
+                    syncDefaultEffectsToCurrentCapture();
                     updateProcessedMosaic();
                     fetch("/matrix_edit");
                     effectModal.show();
@@ -272,6 +391,7 @@
                 brightness: document.getElementById("brightness").value,
                 contrast: document.getElementById("contrast").value,
                 saturation: document.getElementById("saturation").value,
+                highlights: document.getElementById("highlights").value,
                 hue_shift: document.getElementById("hue-shift").value,
                 colorize: colorize ? 1 : 0,
                 invert: invert ? 1 : 0
@@ -280,15 +400,22 @@
 
         function updateProcessedMosaic() {
             if (!lastCapture) return;
+            const requestToken = ++processedMosaicRequestToken;
             const params = getSliderValues();
             const query = new URLSearchParams(params).toString();
             const url = `/processed_mosaic/${lastCapture.folder}/${lastCapture.filename}?${query}&t=${Date.now()}`;
-            document.getElementById("captured-mosaic").src = url;
+            const preview = document.getElementById("captured-mosaic");
+            const image = new Image();
+            image.onload = function() {
+                if (requestToken !== processedMosaicRequestToken) return;
+                preview.src = url;
+            };
+            image.onerror = function() {
+                if (requestToken !== processedMosaicRequestToken) return;
+                console.warn("[effects] failed to load processed mosaic", url);
+            };
+            image.src = url;
         }
-
-        ["brightness", "contrast", "saturation", "hue-shift"].forEach(id => {
-            document.getElementById(id).addEventListener("input", updateProcessedMosaic);
-        });
 
         function updateColorizeButton() {
             const btn = document.getElementById("colorize-btn");
@@ -318,15 +445,17 @@
                     brightness: document.getElementById("brightness").value,
                     contrast: document.getElementById("contrast").value,
                     saturation: document.getElementById("saturation").value,
+                    highlights: document.getElementById("highlights").value,
                     hue_shift: document.getElementById("hue-shift").value,
                     colorize: colorize ? 1 : 0,
-                    invert: invert ? 1 : 0
+                    invert: invert ? 1 : 0,
+                    generation: lastCapture ? lastCapture.generation : null
                 })
             });
         }
 
-        ["brightness", "contrast", "saturation", "hue-shift"].forEach(id => {
-            document.getElementById(id).addEventListener("input", function() {
+        ["brightness", "contrast", "saturation", "highlights", "hue-shift"].forEach(id => {
+            document.getElementById(id).addEventListener("change", function() {
                 updateProcessedMosaic();
                 sendMatrixEffectParams();
             });
@@ -360,7 +489,7 @@
             })
             .then(res => res.json())
             .then(data => {
-                console.log(data); // <-- Add this line for debugging
+                // console.log(data); // <-- Add this line for debugging
                 if (data.success) {
                     alert("Image saved and uploaded successfully!");
                 } else {

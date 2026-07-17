@@ -1,6 +1,6 @@
 import os
 import sys
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 os.chdir(BASE_DIR)
 # Set PYTHONPATH to include the script directory
 sys.path.insert(0, BASE_DIR)
@@ -58,14 +58,15 @@ def matrix_loop():
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
 
     options = RGBMatrixOptions()
-    options.rows = 16
+    options.rows = 32
     options.cols = 32
-    options.chain_length = 2
+    options.chain_length = 1
     options.hardware_mapping = 'adafruit-hat'
-    options.pixel_mapper_config = "U-mapper"
-    options.pwm_bits = 6
-    options.pwm_lsb_nanoseconds = 800
-    options.brightness = 50
+    options.led_rgb_sequence = "GBR"
+    # options.pixel_mapper_config = "U-mapper"
+    options.pwm_bits = 8
+    options.pwm_lsb_nanoseconds = 190
+    options.brightness = 80
     matrix = RGBMatrix(options=options)
     
     if not cap.isOpened():
@@ -209,7 +210,7 @@ def video_feed():
     return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 def run_flask():
-    app.run(debug=True, use_reloader=False, port=5000)
+    app.run(host='0.0.0.0', debug=True, use_reloader=False, port=5000)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)

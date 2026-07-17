@@ -37,6 +37,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Project notes
+CLAUDE.md
+
 # Logs
 *.log
 
@@ -47,6 +50,9 @@ Thumbs.db
 # Local uploads (keep structure but ignore content)
 uploads/*
 !uploads/.gitkeep
+
+# Local env (secrets)
+.env.local
 
 # Exhibition folder (optional - uncomment if you want to ignore exhibition images)
 # exhibition/*.jpg
